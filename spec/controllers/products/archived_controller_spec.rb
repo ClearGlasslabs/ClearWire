@@ -84,6 +84,39 @@ describe Products::ArchivedController, inertia: true do
       expect(membership.purchase_disabled_at).to be_present
     end
 
+    context "when archiving a call product without durations" do
+      let(:call_product) do
+        seller.update_column(:created_at, User::MIN_AGE_FOR_SERVICE_PRODUCTS.ago - 1.day)
+        create(:call_product, user: seller)
+      end
+
+      before do
+        call_product.variant_categories.first.variants.destroy_all
+      end
+
+      it "archives successfully" do
+        post :create, params: { id: call_product.unique_permalink }, as: :json
+
+        expect(response).to have_http_status(:ok)
+        expect(call_product.reload.archived?).to be(true)
+      end
+    end
+
+    context "when archiving a product with empty variant categories" do
+      let(:product_with_versions) { create(:product, user: seller) }
+
+      before do
+        create(:variant_category, link: product_with_versions)
+      end
+
+      it "archives successfully" do
+        post :create, params: { id: product_with_versions.unique_permalink }, as: :json
+
+        expect(response).to have_http_status(:ok)
+        expect(product_with_versions.reload.archived?).to be(true)
+      end
+    end
+
     it "does not change purchase_disabled_at on an already unpublished product" do
       original_disabled_at = 1.week.ago.floor
       membership.update!(purchase_disabled_at: original_disabled_at)
@@ -115,6 +148,24 @@ describe Products::ArchivedController, inertia: true do
       expect(response).to have_http_status(:ok)
       expect(response.parsed_body).to eq({ "success" => true, "archived_products_count" => seller.archived_products_count })
       expect(membership.reload.archived?).to be(false)
+    end
+
+    context "when unarchiving would violate validation" do
+      let(:eligible_seller) { create(:user, :eligible_for_service_products) }
+      let!(:archived_coffee) { create(:product, user: eligible_seller, native_type: Link::NATIVE_TYPE_COFFEE, archived: true) }
+      let!(:active_coffee) { create(:product, user: eligible_seller, native_type: Link::NATIVE_TYPE_COFFEE) }
+
+      before do
+        sign_in eligible_seller
+      end
+
+      it "returns validation error" do
+        delete :destroy, params: { id: archived_coffee.unique_permalink }, as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response.parsed_body).to eq({ "success" => false, "errors" => ["You can only have one coffee product."] })
+        expect(archived_coffee.reload.archived?).to be(true)
+      end
     end
   end
 end

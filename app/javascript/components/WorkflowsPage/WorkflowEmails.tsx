@@ -43,6 +43,7 @@ import { ImageUploadSettingsContext, RichTextEditor, useRichTextEditor } from "$
 import { S3UploadConfigProvider } from "$app/components/S3UploadConfig";
 import { Separator } from "$app/components/Separator";
 import { InvalidNameForEmailDeliveryWarning } from "$app/components/server-components/InvalidNameForEmailDeliveryWarning";
+import { Avatar } from "$app/components/ui/Avatar";
 import { Fieldset } from "$app/components/ui/Fieldset";
 import { Input } from "$app/components/ui/Input";
 import { Placeholder } from "$app/components/ui/Placeholder";
@@ -113,7 +114,9 @@ const WorkflowEmails = ({ context, workflow }: WorkflowEmailsProps) => {
   );
   const updateEmail = (id: string, value: Partial<EditableEmailFormState>) => {
     setEmails((prev) => prev.map((email) => (email.id === id ? { ...email, ...value } : email)));
-    setFocusedFieldInfo({ emailId: id, fieldName: Object.keys(value)[0] ?? null });
+    setFocusedFieldInfo((prev) =>
+      prev?.emailId === id ? prev : { emailId: id, fieldName: Object.keys(value)[0] ?? null },
+    );
     if (value.name !== undefined && invalidFields.some((invalidField) => invalidField.emailId === id)) {
       setInvalidFields((prev) => prev.filter((invalidField) => !(invalidField.emailId === id)));
     }
@@ -269,7 +272,11 @@ const WorkflowEmails = ({ context, workflow }: WorkflowEmailsProps) => {
           actions={
             <>
               <Button asChild>
-                <Link href={Routes.workflows_path()} inert={isBusy || undefined}>
+                <Link
+                  href={Routes.workflows_path()}
+                  inert={isBusy || undefined}
+                  className={isBusy ? "opacity-30" : undefined}
+                >
                   {workflow.published ? (
                     <>
                       <XSquare className="size-5" />
@@ -307,7 +314,7 @@ const WorkflowEmails = ({ context, workflow }: WorkflowEmailsProps) => {
             <EmailPreview
               key={email.id}
               email={email}
-              isEditing={focusedFieldInfo?.emailId === email.id}
+              focusedFieldInfo={focusedFieldInfo?.emailId === email.id ? focusedFieldInfo : null}
               workflowTrigger={workflowTrigger}
               gumroadAddress={context.gumroad_address}
             />
@@ -433,7 +440,6 @@ const EmailRow = ({
 }: EmailRowProps) => {
   const [editorContent, setEditorContent] = React.useState(email.message);
   const handleMessageChange = useDebouncedCallback((message: string) => onChange({ message }), 500);
-  const selfRef = React.useRef<HTMLDivElement>(null);
   const nameInputRef = React.useRef<null | HTMLInputElement>(null);
   const emailFiles = useFiles((files) => files.filter(({ email_id }) => email_id === email.id));
   React.useEffect(() => {
@@ -441,8 +447,7 @@ const EmailRow = ({
 
     const { fieldName } = focusedFieldInfo;
     if (fieldName === "name") nameInputRef.current?.focus();
-    if (fieldName !== "message" && fieldName !== "stream_only") selfRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [focusedFieldInfo]);
+  }, [focusedFieldInfo, email.id]);
   React.useEffect(() => {
     if (expanded) setEditorContent(email.message);
   }, [expanded]);
@@ -454,7 +459,7 @@ const EmailRow = ({
     );
 
   return (
-    <Row role="listitem" ref={selfRef} aria-label="Email">
+    <Row role="listitem" aria-label="Email">
       <RowContent>
         <Envelope pack="filled" className="type-icon size-5" />
         <h3>{email.name.trim() === "" ? "Untitled" : email.name}</h3>
@@ -537,7 +542,7 @@ const EmailRow = ({
             </Fieldset>
             <RichTextEditor
               id={email.id}
-              className="textarea bg-filled block w-full rounded border border-border px-4 py-3 text-foreground placeholder:text-muted focus-within:outline-2 focus-within:outline-offset-0 focus-within:outline-accent"
+              className="textarea block w-full rounded border border-border bg-background px-4 py-3 text-foreground placeholder:text-muted focus-within:outline-2 focus-within:outline-offset-0 focus-within:outline-accent"
               ariaLabel="Email message"
               placeholder="Write a personalized message..."
               extensions={[...(isAbandonedCartWorkflow ? [AbandonedCartProductList] : [])]}
@@ -561,12 +566,12 @@ const EmailRow = ({
 
 const EmailPreview = ({
   email,
-  isEditing,
+  focusedFieldInfo,
   workflowTrigger,
   gumroadAddress,
 }: {
   email: EmailFormState;
-  isEditing: boolean;
+  focusedFieldInfo: FocusedFieldInfo | null;
   workflowTrigger: WorkflowTrigger;
   gumroadAddress: string;
 }) => {
@@ -582,8 +587,10 @@ const EmailPreview = ({
   const emailFiles = useFiles((files) => files.filter(({ email_id }) => email_id === email.id));
 
   React.useEffect(() => {
-    if (isEditing) setTimeout(() => selfRef.current?.scrollIntoView({ behavior: "smooth" }), 500);
-  });
+    if (!focusedFieldInfo || !selfRef.current) return;
+    const sidebar = selfRef.current.closest("aside");
+    if (sidebar) sidebar.scrollTo({ top: selfRef.current.offsetTop, behavior: "smooth" });
+  }, [focusedFieldInfo]);
 
   return (
     <section className="flex flex-col gap-4" ref={selfRef}>
@@ -661,7 +668,7 @@ const AbandonedCartProductListNodeView = (props: NodeViewProps) => {
       </WithTooltip>
       {abandonedCartProducts.length > shownProductCount ? (
         <button
-          className="link cursor-pointer all-unset"
+          className="cursor-pointer text-foreground underline all-unset"
           onClick={() =>
             setShownProductCount(
               shownProductCount + ABANDONED_CART_PRODUCTS_TO_LOAD_PER_PAGE > abandonedCartProducts.length
@@ -705,7 +712,7 @@ const SellerByLine = ({ isPreview }: { isPreview: boolean }) => {
       rel="noopener noreferrer nofollow"
       tabIndex={isPreview ? undefined : -1}
     >
-      <img className="user-avatar" src={currentSeller.avatarUrl} />
+      <Avatar src={currentSeller.avatarUrl} />
       {currentSeller.name || currentSeller.email || ""}
     </a>
   );

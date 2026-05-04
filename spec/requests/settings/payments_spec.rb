@@ -129,6 +129,8 @@ describe("Payments Settings Scenario", type: :system, js: true) do
   end
 
   describe("Payout Information Collection", type: :system, js: true) do
+    include_context "with Stripe API stubs"
+
     before do
       @user = create(:named_user, payment_address: nil)
       user_compliance_info = @user.fetch_or_build_user_compliance_info
@@ -554,11 +556,11 @@ describe("Payments Settings Scenario", type: :system, js: true) do
 
         login_as user
         visit settings_payments_path
-        expect(page).to have_section("Verification")
+        expect(page).to have_section("Account status")
         expect(page).not_to have_status(text: "Your identity has been verified!")
       end
 
-      it "always shows the verification section with success message when verification is not needed" do
+      it "hides the account status section when verification is not needed" do
         user = create(:user, username: nil, payment_address: nil)
         create(:user_compliance_info, user:, birthday: Date.new(1901, 1, 2))
         create(:ach_account_stripe_succeed, user:)
@@ -571,9 +573,9 @@ describe("Payments Settings Scenario", type: :system, js: true) do
         login_as user
         visit settings_payments_path
 
-        expect(page).to have_section("Verification")
+        expect(page).not_to have_section("Account status")
 
-        expect(page).to have_status(text: "Your identity has been verified!")
+        expect(page).not_to have_status(text: "Your identity has been verified!")
       end
 
       it "does not show the verification section if Stripe account is not active" do
@@ -590,12 +592,12 @@ describe("Payments Settings Scenario", type: :system, js: true) do
 
         login_as user
         visit settings_payments_path
-        expect(page).to have_section("Verification")
+        expect(page).to have_section("Account status")
         expect(page).not_to have_status(text: "Your identity has been verified!")
 
         merchant_account.mark_deleted!
         visit settings_payments_path
-        expect(page).to have_status(text: "Your identity has been verified!")
+        expect(page).not_to have_status(text: "Your identity has been verified!")
       end
 
       context "when the creator has a business account" do
@@ -655,12 +657,12 @@ describe("Payments Settings Scenario", type: :system, js: true) do
         visit settings_payments_path
 
         choose "Individual"
-        fill_in "Street address", with: "P.O. Box 123, Smith street"
+        find_field("Address", match: :first).set("P.O. Box 123, Smith street")
         expect do
           click_on "Update settings"
           expect(page).to have_status(text: "We require a valid physical US address. We cannot accept a P.O. Box as a valid address.")
         end.to_not change { @user.alive_user_compliance_info.reload.street_address }
-        fill_in "Street address", with: "123, Smith street"
+        find_field("Address", match: :first).set("123, Smith street")
         expect do
           click_on "Update settings"
           wait_for_ajax
@@ -687,7 +689,7 @@ describe("Payments Settings Scenario", type: :system, js: true) do
           expect(page).to have_alert(text: "Thanks! You're all set.")
           sleep 0.5 # Since the previous Alerts takes time to disappear, checking alert returns early before the api call is complete
         end.to change { @user.alive_user_compliance_info.reload.business_street_address }.to("123 North street")
-        fill_in "Street address", with: "po box 123 smith street"
+        find(:css, "input[id$='creator-street-address']").set("po box 123 smith street")
         expect do
           click_on "Update settings"
           expect(page).to have_status(text: "We require a valid physical US address. We cannot accept a P.O. Box as a valid address.")
@@ -775,6 +777,36 @@ describe("Payments Settings Scenario", type: :system, js: true) do
       end
     end
 
+    describe "US business with EIN already saved, editing non-EIN fields" do
+      before do
+        create(:ach_account_stripe_succeed, user: @user)
+        ActiveRecord::Base.transaction do
+          @user.alive_user_compliance_info.mark_deleted!
+          create(
+            :user_compliance_info_business,
+            user: @user,
+            business_phone: "+15052426789",
+            phone: "+15022541982",
+            birthday: Date.new(1980, 1, 1),
+          )
+        end
+      end
+
+      it "saves changes without rejecting the saved EIN" do
+        visit settings_payments_path
+
+        fill_in "Address", match: :first, with: "456 Updated Business Lane", fill_options: { clear: :backspace }
+
+        click_on("Update settings")
+
+        expect(page).to have_alert(text: "Thanks! You're all set.")
+
+        compliance_info = @user.reload.alive_user_compliance_info
+        expect(compliance_info.business_street_address).to eq("456 Updated Business Lane")
+        expect(compliance_info.business_tax_id.decrypt("1234")).to eq("000000000")
+      end
+    end
+
     describe "CA corporation requiring company registration verification document" do
       before do
         old_user_compliance_info = @user.alive_user_compliance_info
@@ -859,7 +891,7 @@ describe("Payments Settings Scenario", type: :system, js: true) do
         create(:user_compliance_info_request, user: @user, field_needed: UserComplianceInfoFields::Business::COMPANY_REGISTRATION_VERIFICATION)
 
         visit settings_payments_path
-        expect(page).to have_section("Verification")
+        expect(page).to have_section("Account status")
         expect(page).not_to have_status(text: "Your identity has been verified!")
       end
     end
@@ -1333,7 +1365,7 @@ describe("Payments Settings Scenario", type: :system, js: true) do
         fill_in("Address", with: "address_full_match")
         fill_in("City", with: "barnabasville")
         fill_in("Phone number", with: "5022541982")
-        fill_in("Postal code", with: "12345")
+        fill_in("Postal code", with: "1234")
 
         select("1", from: "Day")
         select("January", from: "Month")
@@ -1869,7 +1901,7 @@ describe("Payments Settings Scenario", type: :system, js: true) do
 
         login_as user
         visit settings_payments_path
-        expect(page).to have_section("Verification")
+        expect(page).to have_section("Account status")
         expect(page).not_to have_status(text: "Your identity has been verified!")
       end
 
@@ -4190,6 +4222,102 @@ describe("Payments Settings Scenario", type: :system, js: true) do
         expect(@user.reload.active_bank_account.routing_number).to eq("022112")
         expect(@user.reload.active_bank_account.send(:account_number_decrypted)).to eq("000123456789")
       end
+
+      it "allows saving unrelated changes when a legacy individual P.O. Box address is unchanged" do
+        allow_any_instance_of(User).to receive(:can_setup_paypal_payouts?).and_return(true)
+        @user.update!(payment_address: "ghanaian@example.com")
+        @user.alive_user_compliance_info.dup_and_save! do |new_compliance_info|
+          new_compliance_info.first_name = "ghanaian"
+          new_compliance_info.last_name = "creator"
+          new_compliance_info.street_address = "PO Box 99, Accra"
+          new_compliance_info.city = "Accra"
+          new_compliance_info.phone = "+233302213850"
+          new_compliance_info.zip_code = "00233"
+          new_compliance_info.birthday = Date.new(1980, 1, 1)
+        end
+
+        visit settings_payments_path
+
+        fill_in("First name", with: "newfirst")
+        click_on("Update settings")
+
+        expect(page).to have_alert(text: "Thanks! You're all set.")
+        expect(@user.reload.alive_user_compliance_info.first_name).to eq("newfirst")
+        expect(@user.alive_user_compliance_info.street_address).to eq("PO Box 99, Accra")
+      end
+
+      it "allows saving unrelated changes when a hidden legacy business P.O. Box address is unchanged for an individual" do
+        allow_any_instance_of(User).to receive(:can_setup_paypal_payouts?).and_return(true)
+        @user.update!(payment_address: "ghanaian@example.com")
+        @user.alive_user_compliance_info.dup_and_save! do |new_compliance_info|
+          new_compliance_info.first_name = "ghanaian"
+          new_compliance_info.last_name = "creator"
+          new_compliance_info.street_address = "address_full_match"
+          new_compliance_info.business_street_address = "PO Box 77, Accra"
+          new_compliance_info.city = "Accra"
+          new_compliance_info.phone = "+233302213850"
+          new_compliance_info.zip_code = "00233"
+          new_compliance_info.birthday = Date.new(1980, 1, 1)
+        end
+
+        visit settings_payments_path
+
+        fill_in("First name", with: "newfirst")
+        click_on("Update settings")
+
+        expect(page).to have_alert(text: "Thanks! You're all set.")
+        expect(@user.reload.alive_user_compliance_info.first_name).to eq("newfirst")
+        expect(@user.alive_user_compliance_info.business_street_address).to eq("PO Box 77, Accra")
+      end
+
+      it "does not allow saving an individual P.O. Box address" do
+        visit settings_payments_path
+
+        choose "Individual"
+        fill_in("Phone number", with: "302213850")
+
+        find_field("Address", match: :first).set("P.O. Box 123, High street")
+
+        expect do
+          click_on "Update settings"
+          expect(page).to have_status(text: "We require a valid physical address in Ghana. We cannot accept a P.O. Box as a valid address.")
+        end.to_not change { @user.alive_user_compliance_info.reload.street_address }
+      end
+
+      it "does not allow saving a business P.O. Box address" do
+        visit settings_payments_path
+
+        fill_in("First name", with: "ghanaian")
+        fill_in("Last name", with: "creator")
+        fill_in("Address", with: "address_full_match")
+        fill_in("City", with: "Accra")
+        fill_in("Phone number", with: "302213850")
+        fill_in("Postal code", with: "00233")
+
+        select("1", from: "Day")
+        select("January", from: "Month")
+        select("1980", from: "Year")
+
+        choose "Business"
+
+        fill_in "Legal business name", with: "Acme"
+        select("LLC", from: "Type")
+        find_field("Address", match: :first).set("PO Box 123 High street")
+        find_field("City", match: :first).set("Accra")
+        find_field("Postal code", match: :first).set("00233")
+        fill_in "Business phone number", with: "302213850"
+        fill_in "Company tax ID", with: "000000000"
+
+        fill_in("Pay to the order of", with: "ghanaian creator")
+        fill_in("Bank code", with: "022112")
+        fill_in("Account #", with: "000123456789")
+        fill_in("Confirm account #", with: "000123456789")
+
+        expect do
+          click_on "Update settings"
+          expect(page).to have_status(text: "We require a valid physical address in Ghana. We cannot accept a P.O. Box as a valid address.")
+        end.to_not change { @user.alive_user_compliance_info.reload.business_street_address }
+      end
     end
 
     describe "Jamaican creator" do
@@ -5178,8 +5306,8 @@ describe("Payments Settings Scenario", type: :system, js: true) do
         select("1901", from: "Year")
 
         fill_in("Pay to the order of", with: "El Salvadorian Creator")
-        fill_in("IBAN", with: "SV44BCIE12345678901234567890")
-        fill_in("Confirm IBAN", with: "SV44BCIE12345678901234567890")
+        fill_in("Account number", with: "12345678901234")
+        fill_in("Confirm account number", with: "12345678901234")
         fill_in("SWIFT / BIC Code", with: "AAAASVS1XXX")
 
         expect(page).to have_content("Must exactly match the name on your bank account")
@@ -5197,7 +5325,7 @@ describe("Payments Settings Scenario", type: :system, js: true) do
         expect(compliance_info.zip_code).to eq("1101")
         expect(compliance_info.phone).to eq("+50368765432")
         expect(compliance_info.birthday).to eq(Date.new(1901, 1, 1))
-        expect(@user.reload.active_bank_account.send(:account_number_decrypted)).to eq("SV44BCIE12345678901234567890")
+        expect(@user.reload.active_bank_account.send(:account_number_decrypted)).to eq("12345678901234")
         expect(@user.reload.active_bank_account.routing_number).to eq("AAAASVS1XXX")
       end
     end
@@ -6153,13 +6281,12 @@ describe("Payments Settings Scenario", type: :system, js: true) do
         visit settings_payments_path
         within_modal do
           expect(page).to have_content "Where are you located?"
-          expect(page).to have_content "You may have to forfeit your balance if you want to change your country in the future."
           expect(page).to have_button "Save", disabled: true
           expect(find(:select, "Country")).to have_selector(:option, "Somalia (not supported)", disabled: true)
           select "United States", from: "Country"
           check "I have a valid, government-issued photo ID"
           check "I have proof of residence within this country"
-          check "If I am signing up as a business, it is registered in the country above"
+          check "I am signing up as an individual, or my business is registered in the country above"
           click_on "Save"
           wait_for_ajax
         end
@@ -6274,7 +6401,7 @@ describe("Payments Settings Scenario", type: :system, js: true) do
 
           click_on "Opt-in to backtaxes collection"
 
-          expect(page).to have_field("Type your full name to opt-in", placeholder: "Full name")
+          expect(page).to have_field("Type your full name to opt-in")
         end
       end
     end
@@ -6334,10 +6461,10 @@ describe("Payments Settings Scenario", type: :system, js: true) do
         user.update!(payouts_paused_internally: true)
         visit settings_payments_path
 
-        expect(page).to have_status(text: "Your payouts have been paused by Gumroad admin.")
+        expect(page).to have_status(text: "Your payouts have been paused by Gumroad.")
       end
 
-      it "shows the warning notice when payouts are paused internally by admin with a reason" do
+      it "does not expose the admin pause reason in the warning notice" do
         user.update!(payouts_paused_internally: true, payouts_paused_by: User.last.id)
         user.comments.create!(
           author_id: User.last.id,
@@ -6347,21 +6474,22 @@ describe("Payments Settings Scenario", type: :system, js: true) do
 
         visit settings_payments_path
 
-        expect(page).to have_status(text: "Your payouts have been paused by Gumroad admin. Reason for pause: Chargeback rate is too high.")
+        expect(page).to have_status(text: "Your payouts have been paused by Gumroad.")
+        expect(page).not_to have_text("Chargeback rate is too high")
       end
 
       it "shows the warning notice when payouts are paused internally by Stripe" do
         user.update!(payouts_paused_internally: true, payouts_paused_by: User::PAYOUT_PAUSE_SOURCE_STRIPE)
         visit settings_payments_path
 
-        expect(page).to have_status(text: "Your payouts are currently paused by our payment processor. Please check for any pending verification requirements below.")
+        expect(page).to have_status(text: "Your payouts have been paused by Stripe.")
       end
 
       it "shows the warning notice when payouts are paused internally by the system" do
         user.update!(payouts_paused_internally: true, payouts_paused_by: User::PAYOUT_PAUSE_SOURCE_SYSTEM)
         visit settings_payments_path
 
-        expect(page).to have_status(text: "Your payouts have been automatically paused for a security review and will be resumed once the review completes.")
+        expect(page).to have_status(text: "Your payouts have been paused for a security review.")
       end
 
       it "shows the warning notice when payouts are paused by the user" do
@@ -6369,6 +6497,31 @@ describe("Payments Settings Scenario", type: :system, js: true) do
         visit settings_payments_path
 
         expect(page).to have_status(text: "You have paused your payouts.")
+      end
+
+      it "does not suggest the pause toggle will resume payouts while the account is under review" do
+        user.put_on_probation!(author_name: "test")
+        user.update!(payouts_paused_by_user: true)
+        visit settings_payments_path
+
+        expect(page).to have_status(text: "You have paused your payouts.")
+        expect(page).to have_status(text: "Your account is under review and payouts are on hold until it's resolved.")
+        expect(page).not_to have_text("Use the pause payouts toggle below to resume.")
+      end
+    end
+
+    describe "account status" do
+      it "renders compliance actions as direct linked instructions" do
+        request = create(:user_compliance_info_request, user:, field_needed: UserComplianceInfoFields::Individual::TAX_ID)
+        request.verification_error = { "message" => "Please provide your tax ID" }
+        request.save!
+        visit settings_payments_path
+
+        within_section "Account status", section_element: :section do
+          expect(page).to have_text("Please provide your tax ID.")
+          expect(page).to have_link("contact support", href: "https://help.gumroad.com")
+          expect(page).not_to have_text("Action needed")
+        end
       end
     end
 
@@ -6402,11 +6555,11 @@ describe("Payments Settings Scenario", type: :system, js: true) do
         within_section "Payout schedule", section_element: :section do
           toggle = find_field("Pause payouts", disabled: true, checked: true)
           toggle.hover
-          expect(toggle).to have_tooltip(text: "Your payouts have been paused by Gumroad admin.")
+          expect(toggle).to have_tooltip(text: "Your payouts have been paused by Gumroad.")
         end
       end
 
-      it "disables the toggle when payouts are paused internally by admin with a reason" do
+      it "does not expose the admin pause reason in the toggle tooltip" do
         user.update!(payouts_paused_internally: true, payouts_paused_by: User.last.id)
         user.comments.create!(
           author_id: User.last.id,
@@ -6419,7 +6572,8 @@ describe("Payments Settings Scenario", type: :system, js: true) do
         within_section "Payout schedule", section_element: :section do
           toggle = find_field("Pause payouts", disabled: true, checked: true)
           toggle.hover
-          expect(toggle).to have_tooltip(text: "Your payouts have been paused by Gumroad admin. Reason for pause: Chargeback rate is too high.")
+          expect(toggle).to have_tooltip(text: "Your payouts have been paused by Gumroad.")
+          expect(toggle).not_to have_tooltip(text: "Chargeback rate is too high")
         end
       end
 
@@ -6430,7 +6584,7 @@ describe("Payments Settings Scenario", type: :system, js: true) do
         within_section "Payout schedule", section_element: :section do
           toggle = find_field("Pause payouts", disabled: true, checked: true)
           toggle.hover
-          expect(toggle).to have_tooltip(text: "Your payouts are currently paused by our payment processor. Please check for any pending verification requirements above.")
+          expect(toggle).to have_tooltip(text: "Your payouts have been paused by Stripe.")
         end
       end
 
@@ -6441,7 +6595,7 @@ describe("Payments Settings Scenario", type: :system, js: true) do
         within_section "Payout schedule", section_element: :section do
           toggle = find_field("Pause payouts", disabled: true, checked: true)
           toggle.hover
-          expect(toggle).to have_tooltip(text: "Your payouts have been automatically paused for a security review and will be resumed once the review completes.")
+          expect(toggle).to have_tooltip(text: "Your payouts have been paused for a security review.")
         end
       end
     end
@@ -6450,21 +6604,21 @@ describe("Payments Settings Scenario", type: :system, js: true) do
       it "allows updating the payout threshold" do
         visit settings_payments_path
 
-        field = find_field("Minimum payout threshold", with: "10")
-        field.fill_in(with: "5")
+        field = find_field("Minimum payout threshold", with: "100")
+        field.fill_in(with: "50")
 
         expect(field["aria-invalid"]).to eq("true")
-        expect(page).to have_text("The minimum payout threshold for United States is $10.")
+        expect(page).to have_text("The minimum payout threshold for United States is $100.")
         expect(page).to have_button("Update settings", disabled: true)
 
-        field.fill_in(with: "15")
+        field.fill_in(with: "150")
         expect(field["aria-invalid"]).to eq("false")
-        expect(page).to have_text("The minimum payout threshold for United States is $10.")
+        expect(page).to have_text("The minimum payout threshold for United States is $100.")
 
         click_on "Update settings"
 
         expect(page).to have_alert(text: "Thanks! You're all set.")
-        expect(user.reload.minimum_payout_amount_cents).to eq(1500)
+        expect(user.reload.minimum_payout_amount_cents).to eq(15_000)
       end
 
       context "when the user is in a cross-border payout country" do
@@ -6478,37 +6632,37 @@ describe("Payments Settings Scenario", type: :system, js: true) do
         it "shows the minimum payout threshold for the country" do
           visit settings_payments_path
 
-          field = find_field("Minimum payout threshold", with: "34.74")
-          field.fill_in(with: "30")
+          field = find_field("Minimum payout threshold", with: "100")
+          field.fill_in(with: "50")
 
           expect(field["aria-invalid"]).to eq("true")
-          expect(page).to have_text("The minimum payout threshold for South Korea is $34.74.")
+          expect(page).to have_text("The minimum payout threshold for South Korea is $100.")
           expect(page).to have_button("Update settings", disabled: true)
 
-          field.fill_in(with: "40")
+          field.fill_in(with: "150")
           expect(field["aria-invalid"]).to eq("false")
-          expect(page).to have_text("The minimum payout threshold for South Korea is $34.74.")
+          expect(page).to have_text("The minimum payout threshold for South Korea is $100.")
 
           click_on "Update settings"
 
           expect(page).to have_alert(text: "Thanks! You're all set.")
-          expect(user.reload.minimum_payout_amount_cents).to eq(4000)
+          expect(user.reload.minimum_payout_amount_cents).to eq(15_000)
         end
 
         it "loads the raw stored payout threshold in the form field, not the effective minimum" do
-          user.update!(payout_threshold_cents: 1000)
+          user.update!(payout_threshold_cents: 5000)
 
           visit settings_payments_path
 
           field = find_field("Minimum payout threshold")
-          expect(field.value).to eq("10")
+          expect(field.value).to eq("50")
 
-          fill_in "Minimum payout threshold", with: "35", fill_options: { clear: :backspace }
+          fill_in "Minimum payout threshold", with: "105", fill_options: { clear: :backspace }
 
           click_on "Update settings"
 
           expect(page).to have_alert(text: "Thanks! You're all set.")
-          expect(user.reload.payout_threshold_cents).to eq(3500)
+          expect(user.reload.payout_threshold_cents).to eq(10_500)
         end
       end
     end

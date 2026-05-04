@@ -21,7 +21,7 @@ module Purchase::Risk
       check_for_past_fraudulent_ips
     end
   rescue Timeout::Error => e
-    # Bugsnag.notify(e)
+    # ErrorNotifier.notify(e)
     logger.info("Check for fraud: Could not check for fraud for purchase #{id}. Exception: #{e.message}")
     nil
   end
@@ -37,7 +37,11 @@ module Purchase::Risk
 
   private
     def vague_error_message
-      record = is_gift_receiver_purchase ? gift_received.gifter_purchase : self
+      record = if is_gift_receiver_purchase
+        gift_received&.gifter_purchase || self
+      else
+        self
+      end
       if record.free_purchase?
         "The transaction could not complete."
       else

@@ -38,7 +38,7 @@ import { WithTooltip } from "$app/components/WithTooltip";
 import placeholder from "$assets/images/placeholders/payouts.png";
 
 const INSTANT_PAYOUT_FEE_PERCENTAGE = 0.03;
-const MINIMUM_INSTANT_PAYOUT_AMOUNT_CENTS = 1000;
+const MINIMUM_INSTANT_PAYOUT_AMOUNT_CENTS = 10000;
 const MAXIMUM_INSTANT_PAYOUT_AMOUNT_CENTS = 999900;
 
 type StripeConnectAccount = { payout_method_type: "stripe_connect"; stripe_connect_account_id: string };
@@ -147,7 +147,7 @@ const Period = ({ payoutPeriodData }: { payoutPeriodData: PayoutPeriodData }) =>
                     </a>
                   </h4>
                   {payoutPeriodData.discover_sales_count > 0 ? (
-                    <small className="text-muted">
+                    <small className="block text-muted">
                       on {payoutPeriodData.discover_sales_count}{" "}
                       {payoutPeriodData.discover_sales_count === 1 ? "sale" : "sales"}
                     </small>
@@ -166,7 +166,7 @@ const Period = ({ payoutPeriodData }: { payoutPeriodData: PayoutPeriodData }) =>
                     </a>
                   </h4>
                   {payoutPeriodData.direct_sales_count > 0 ? (
-                    <small className="text-muted">
+                    <small className="block text-muted">
                       on {payoutPeriodData.direct_sales_count}{" "}
                       {payoutPeriodData.direct_sales_count === 1 ? "sale" : "sales"}
                     </small>
@@ -446,12 +446,12 @@ export default function PayoutsIndex() {
     processing_payout_periods_data,
     payouts_status,
     payouts_paused_by,
-    payouts_paused_for_reason,
     instant_payout,
     show_instant_payouts_notice,
     tax_center_enabled,
     past_payout_period_data,
     pagination,
+    scheduled_payout,
   } = usePage<PayoutsProps>().props;
 
   const loggedInUser = useLoggedInUser();
@@ -534,6 +534,47 @@ export default function PayoutsIndex() {
         ) : null}
       </PageHeader>
       <div className="space-y-8 p-4 md:p-8">
+        {scheduled_payout ? (
+          <Alert variant="info" role="status">
+            <p>
+              {scheduled_payout.action === "payout" ? (
+                scheduled_payout.status === "executed" ? (
+                  <>
+                    Your balance
+                    {scheduled_payout.payout_amount_cents != null
+                      ? ` of ${formatPriceCentsWithCurrencySymbol("usd", scheduled_payout.payout_amount_cents, { symbolFormat: "short", noCentsIfWhole: false })}`
+                      : ""}{" "}
+                    has been paid out.
+                  </>
+                ) : (
+                  <>
+                    Your balance
+                    {scheduled_payout.payout_amount_cents != null
+                      ? ` of ${formatPriceCentsWithCurrencySymbol("usd", scheduled_payout.payout_amount_cents, { symbolFormat: "short", noCentsIfWhole: false })}`
+                      : ""}{" "}
+                    is scheduled for payout on{" "}
+                    <strong>{new Date(scheduled_payout.scheduled_at).toLocaleDateString()}</strong>.
+                    {scheduled_payout.status === "flagged" &&
+                      " Your payout is under review. Please contact support for details."}
+                  </>
+                )
+              ) : scheduled_payout.action === "refund" ? (
+                scheduled_payout.status === "executed" ? (
+                  <>Your unpaid sales have been refunded to buyers.</>
+                ) : (
+                  <>
+                    Your balance will not be paid out. Unpaid sales are scheduled to be refunded to buyers on{" "}
+                    <strong>{new Date(scheduled_payout.scheduled_at).toLocaleDateString()}</strong>.
+                  </>
+                )
+              ) : (
+                <>
+                  Your balance is on hold. Please <a href={Routes.support_index_path()}>contact support</a> for details.
+                </>
+              )}
+            </p>
+          </Alert>
+        ) : null}
         {!instant_payout ? (
           show_instant_payouts_notice ? (
             <Alert variant="info" role="status">
@@ -674,14 +715,11 @@ export default function PayoutsIndex() {
             <p>
               {payouts_paused_by === "stripe" ? (
                 <strong>
-                  Your payouts are currently paused by our payment processor. Please check your{" "}
+                  Your payouts are currently paused by Stripe. Please check your{" "}
                   <a href="/settings/payments">Payment Settings</a> for any verification requirements.
                 </strong>
               ) : payouts_paused_by === "admin" ? (
-                <strong>
-                  Your payouts have been paused by Gumroad admin.
-                  {payouts_paused_for_reason ? ` Reason for pause: ${payouts_paused_for_reason}` : null}
-                </strong>
+                <strong>Your payouts have been paused by Gumroad.</strong>
               ) : payouts_paused_by === "system" ? (
                 <strong>
                   Your payouts have been automatically paused for a security review and will be resumed once the review

@@ -1,4 +1,5 @@
-import { ChevronDown, ChevronLeft, ChevronRight, MenuFilter } from "@boxicons/react";
+import { ChevronDown, ChevronLeft, ChevronRight, MenuFilter, X } from "@boxicons/react";
+import * as Dialog from "@radix-ui/react-dialog";
 import * as React from "react";
 import { CSSProperties } from "react";
 
@@ -331,8 +332,15 @@ const OverlayMenu = ({
         open={menuOpen}
         onOpenChange={setMenuOpen}
         modal
-        className="right-auto w-80 max-w-80 border-l-0 p-0 md:left-0 md:border-r"
+        className="w-[calc(20rem+3rem)] bg-transparent p-0 pr-12 md:left-0 md:border-l-0"
       >
+        <Dialog.Title className="sr-only">{buttonLabel ?? "Categories"}</Dialog.Title>
+        <Dialog.Close
+          className="absolute top-4 right-4 z-40 cursor-pointer bg-transparent all-unset"
+          aria-label="Close Menu"
+        >
+          <X className="size-6 text-white" />
+        </Dialog.Close>
         <ItemsList
           key={`${overlayMenuUID}-${menuOpen}`}
           menuId={overlayMenuUID}
@@ -347,7 +355,7 @@ const OverlayMenu = ({
             setMenuOpen(false);
             onSelectItem?.(newSelectedItem, e);
           }}
-          className="h-full overflow-x-hidden overflow-y-auto"
+          className="h-full w-80 overflow-x-hidden overflow-y-auto bg-background"
         />
       </Sheet>
     </>
@@ -383,6 +391,7 @@ const ItemsList = ({
         <MenuItemLink
           key={`back${displayedItem.key}`}
           href={displayedItem.parent?.href ?? "#"}
+          className="justify-start"
           onClick={(e) => {
             if (e.ctrlKey || e.shiftKey) return;
             setDisplayedItem(displayedItem.parent ?? initialMenuItem);
@@ -432,7 +441,7 @@ const MenuItemLink = ({
     {...props}
     href={props.href ?? "#"}
     className={classNames(
-      "shrink-0 justify-between gap-2 overflow-visible! p-4! whitespace-normal! hover:bg-primary! hover:text-background!",
+      "flex shrink-0 justify-between gap-2 overflow-visible! p-4! whitespace-normal! hover:bg-primary! hover:text-background!",
       className,
     )}
     role="menuitem"

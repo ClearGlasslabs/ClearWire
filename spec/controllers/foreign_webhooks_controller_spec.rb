@@ -169,11 +169,161 @@ describe ForeignWebhooksController do
   end
 
   describe "#sendgrid" do
-    it "responds successfully" do
-      post :sendgrid, params: @query
-      expect(HandleSendgridEventJob).to have_enqueued_sidekiq_job(@query.merge(controller: "foreign_webhooks", action: "sendgrid"))
-      expect(LogSendgridEventWorker).to have_enqueued_sidekiq_job(@query.merge(controller: "foreign_webhooks", action: "sendgrid"))
-      expect(response).to be_successful
+    let(:ec_keys) { Array.new(3) { OpenSSL::PKey::EC.generate("prime256v1") } }
+    let(:public_keys) { ec_keys.map { |k| Base64.strict_encode64(k.public_to_der) } }
+    let(:signing_key) { ec_keys.last }
+    let(:timestamp) { Time.current.to_i.to_s }
+    let(:events) { [{ event: "delivered", email: "buyer@example.com", sg_message_id: "abc123" }] }
+    let(:raw_body) { events.to_json }
+    let(:signature) do
+      digest = Digest::SHA256.digest("#{timestamp}#{raw_body}")
+      Base64.strict_encode64(signing_key.dsa_sign_asn1(digest))
+    end
+
+    before do
+      ForeignWebhooksController::SENDGRID_WEBHOOK_PUBLIC_KEY_ENV_VARS.each_with_index do |name, i|
+        allow(GlobalConfig).to receive(:get).with(name).and_return(public_keys[i])
+      end
+      allow(Feature).to receive(:active?).and_call_original
+      allow(Feature).to receive(:active?).with(:verify_sendgrid_webhook_signatures).and_return(true)
+      request.headers["X-Twilio-Email-Event-Webhook-Signature"] = signature
+      request.headers["X-Twilio-Email-Event-Webhook-Timestamp"] = timestamp
+    end
+
+    context "with valid signature" do
+      it "enqueues handlers and responds successfully when signed by any configured key" do
+        post :sendgrid, body: raw_body, as: :json
+        expect(response).to be_successful
+        expect(HandleSendgridEventJob.jobs.size).to eq(1)
+        expect(LogSendgridEventWorker.jobs.size).to eq(1)
+      end
+
+      it "accepts a signature from the first configured key" do
+        first_key = ec_keys.first
+        digest = Digest::SHA256.digest("#{timestamp}#{raw_body}")
+        request.headers["X-Twilio-Email-Event-Webhook-Signature"] =
+          Base64.strict_encode64(first_key.dsa_sign_asn1(digest))
+        post :sendgrid, body: raw_body, as: :json
+        expect(response).to be_successful
+        expect(HandleSendgridEventJob.jobs.size).to eq(1)
+        expect(LogSendgridEventWorker.jobs.size).to eq(1)
+      end
+
+      it "ignores blank entries when some keys are unset" do
+        ForeignWebhooksController::SENDGRID_WEBHOOK_PUBLIC_KEY_ENV_VARS.each_with_index do |name, i|
+          value = (i == ec_keys.size - 1) ? public_keys.last : nil
+          allow(GlobalConfig).to receive(:get).with(name).and_return(value)
+        end
+        post :sendgrid, body: raw_body, as: :json
+        expect(response).to be_successful
+        expect(HandleSendgridEventJob.jobs.size).to eq(1)
+      end
+    end
+
+    context "with missing headers" do
+      it "returns 500 so SendGrid retries when signature header is missing" do
+        request.headers["X-Twilio-Email-Event-Webhook-Signature"] = nil
+        expect(ErrorNotifier).to receive(:notify).with("Error verifying SendGrid webhook: Missing signature")
+        post :sendgrid, body: raw_body, as: :json
+        expect(response).to be_a_server_error
+        expect(HandleSendgridEventJob.jobs.size).to eq(0)
+        expect(LogSendgridEventWorker.jobs.size).to eq(0)
+      end
+
+      it "returns 500 so SendGrid retries when timestamp header is missing" do
+        request.headers["X-Twilio-Email-Event-Webhook-Timestamp"] = nil
+        expect(ErrorNotifier).to receive(:notify).with("Error verifying SendGrid webhook: Missing timestamp")
+        post :sendgrid, body: raw_body, as: :json
+        expect(response).to be_a_server_error
+        expect(HandleSendgridEventJob.jobs.size).to eq(0)
+        expect(LogSendgridEventWorker.jobs.size).to eq(0)
+      end
+
+      it "returns 500 so SendGrid retries when no public keys are configured" do
+        ForeignWebhooksController::SENDGRID_WEBHOOK_PUBLIC_KEY_ENV_VARS.each do |name|
+          allow(GlobalConfig).to receive(:get).with(name).and_return(nil)
+        end
+        expect(ErrorNotifier).to receive(:notify).with("Error verifying SendGrid webhook: No public keys configured")
+        post :sendgrid, body: raw_body, as: :json
+        expect(response).to be_a_server_error
+        expect(HandleSendgridEventJob.jobs.size).to eq(0)
+        expect(LogSendgridEventWorker.jobs.size).to eq(0)
+      end
+    end
+
+    context "with invalid signature" do
+      it "returns 500 so SendGrid retries when signature is from a key not in the allowed set" do
+        unrelated_key = OpenSSL::PKey::EC.generate("prime256v1")
+        digest = Digest::SHA256.digest("#{timestamp}#{raw_body}")
+        forged = Base64.strict_encode64(unrelated_key.dsa_sign_asn1(digest))
+        request.headers["X-Twilio-Email-Event-Webhook-Signature"] = forged
+        expect(ErrorNotifier).to receive(:notify).with("Error verifying SendGrid webhook: Invalid signature")
+        post :sendgrid, body: raw_body, as: :json
+        expect(response).to be_a_server_error
+        expect(HandleSendgridEventJob.jobs.size).to eq(0)
+        expect(LogSendgridEventWorker.jobs.size).to eq(0)
+      end
+
+      it "returns 500 so SendGrid retries when payload is tampered" do
+        expect(ErrorNotifier).to receive(:notify).with("Error verifying SendGrid webhook: Invalid signature")
+        post :sendgrid, body: [{ event: "tampered", email: "attacker@example.com" }].to_json, as: :json
+        expect(response).to be_a_server_error
+        expect(HandleSendgridEventJob.jobs.size).to eq(0)
+        expect(LogSendgridEventWorker.jobs.size).to eq(0)
+      end
+    end
+
+    context "with old timestamp" do
+      it "returns 500 so SendGrid retries when timestamp is outside the 5-minute window" do
+        old_timestamp = 6.minutes.ago.to_i.to_s
+        request.headers["X-Twilio-Email-Event-Webhook-Timestamp"] = old_timestamp
+        digest = Digest::SHA256.digest("#{old_timestamp}#{raw_body}")
+        request.headers["X-Twilio-Email-Event-Webhook-Signature"] = Base64.strict_encode64(signing_key.dsa_sign_asn1(digest))
+        expect(ErrorNotifier).to receive(:notify).with("Error verifying SendGrid webhook: Timestamp too old")
+        post :sendgrid, body: raw_body, as: :json
+        expect(response).to be_a_server_error
+        expect(HandleSendgridEventJob.jobs.size).to eq(0)
+        expect(LogSendgridEventWorker.jobs.size).to eq(0)
+      end
+    end
+
+    it "logs verification failures via Rails.logger.warn" do
+      request.headers["X-Twilio-Email-Event-Webhook-Signature"] = nil
+      allow(ErrorNotifier).to receive(:notify)
+      expect(Rails.logger).to receive(:warn).with("SendGrid webhook verification failed: Missing signature")
+      post :sendgrid, body: raw_body, as: :json
+    end
+
+    context "when verify_sendgrid_webhook_signatures feature flag is disabled" do
+      before do
+        allow(Feature).to receive(:active?).with(:verify_sendgrid_webhook_signatures).and_return(false)
+      end
+
+      it "still processes a valid webhook successfully" do
+        post :sendgrid, body: raw_body, as: :json
+        expect(response).to be_successful
+        expect(HandleSendgridEventJob.jobs.size).to eq(1)
+        expect(LogSendgridEventWorker.jobs.size).to eq(1)
+      end
+
+      it "shadow-logs failures but processes the webhook anyway" do
+        request.headers["X-Twilio-Email-Event-Webhook-Signature"] = nil
+        expect(Rails.logger).to receive(:warn).with("SendGrid webhook verification failed: Missing signature")
+        expect(ErrorNotifier).not_to receive(:notify)
+        post :sendgrid, body: raw_body, as: :json
+        expect(response).to be_successful
+        expect(HandleSendgridEventJob.jobs.size).to eq(1)
+        expect(LogSendgridEventWorker.jobs.size).to eq(1)
+      end
+
+      it "processes unsigned legacy webhooks without erroring" do
+        request.headers["X-Twilio-Email-Event-Webhook-Signature"] = nil
+        request.headers["X-Twilio-Email-Event-Webhook-Timestamp"] = nil
+        allow(Rails.logger).to receive(:warn)
+        post :sendgrid, body: raw_body, as: :json
+        expect(response).to be_successful
+        expect(HandleSendgridEventJob.jobs.size).to eq(1)
+      end
     end
   end
 
@@ -212,7 +362,7 @@ describe ForeignWebhooksController do
     context "with missing headers" do
       it "returns bad request when signature is missing" do
         request.headers["svix-signature"] = nil
-        expect(Bugsnag).to receive(:notify).with("Error verifying Resend webhook: Missing signature")
+        expect(ErrorNotifier).to receive(:notify).with("Error verifying Resend webhook: Missing signature")
         post :resend, params: payload, as: :json
         expect(response).to be_a_bad_request
         expect(HandleResendEventJob.jobs.size).to eq(0)
@@ -221,7 +371,7 @@ describe ForeignWebhooksController do
 
       it "returns bad request when timestamp is missing" do
         request.headers["svix-timestamp"] = nil
-        expect(Bugsnag).to receive(:notify).with("Error verifying Resend webhook: Missing timestamp")
+        expect(ErrorNotifier).to receive(:notify).with("Error verifying Resend webhook: Missing timestamp")
         post :resend, params: payload, as: :json
         expect(response).to be_a_bad_request
         expect(HandleResendEventJob.jobs.size).to eq(0)
@@ -230,7 +380,7 @@ describe ForeignWebhooksController do
 
       it "returns bad request when message ID is missing" do
         request.headers["svix-id"] = nil
-        expect(Bugsnag).to receive(:notify).with("Error verifying Resend webhook: Missing message ID")
+        expect(ErrorNotifier).to receive(:notify).with("Error verifying Resend webhook: Missing message ID")
         post :resend, params: payload, as: :json
         expect(response).to be_a_bad_request
         expect(HandleResendEventJob.jobs.size).to eq(0)
@@ -241,7 +391,7 @@ describe ForeignWebhooksController do
     context "with invalid signature" do
       it "returns bad request when signature format is invalid" do
         request.headers["svix-signature"] = "invalid"
-        expect(Bugsnag).to receive(:notify).with("Error verifying Resend webhook: Invalid signature format")
+        expect(ErrorNotifier).to receive(:notify).with("Error verifying Resend webhook: Invalid signature format")
         post :resend, params: payload, as: :json
         expect(response).to be_a_bad_request
         expect(HandleResendEventJob.jobs.size).to eq(0)
@@ -250,7 +400,7 @@ describe ForeignWebhooksController do
 
       it "returns bad request when signature is incorrect" do
         request.headers["svix-signature"] = "v1,invalid"
-        expect(Bugsnag).to receive(:notify).with("Error verifying Resend webhook: Invalid signature")
+        expect(ErrorNotifier).to receive(:notify).with("Error verifying Resend webhook: Invalid signature")
         post :resend, params: payload, as: :json
         expect(response).to be_a_bad_request
         expect(HandleResendEventJob.jobs.size).to eq(0)
@@ -261,7 +411,7 @@ describe ForeignWebhooksController do
     context "with old timestamp" do
       it "returns bad request when timestamp is too old" do
         request.headers["svix-timestamp"] = (6.minutes.ago.to_i).to_s
-        expect(Bugsnag).to receive(:notify).with("Error verifying Resend webhook: Timestamp too old")
+        expect(ErrorNotifier).to receive(:notify).with("Error verifying Resend webhook: Timestamp too old")
         post :resend, params: payload, as: :json
         expect(response).to be_a_bad_request
         expect(HandleResendEventJob.jobs.size).to eq(0)

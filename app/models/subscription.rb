@@ -34,7 +34,7 @@ class Subscription < ApplicationRecord
   has_flags 1 => :is_test_subscription,
             2 => :cancelled_by_buyer,
             3 => :cancelled_by_admin,
-            4 => :flat_fee_applicable,
+            4 => :DEPRECATED_flat_fee_applicable,
             5 => :is_resubscription_pending_confirmation,
             6 => :mor_fee_applicable,
             7 => :is_installment_plan,
@@ -65,11 +65,11 @@ class Subscription < ApplicationRecord
   validate :must_have_payment_option
   validate :installment_plans_cannot_be_cancelled_by_buyer
 
-  before_create :enable_flat_fee
   before_create :enable_mor_fee
   after_create :update_last_payment_option
   after_save :create_interruption_event, if: -> { deactivated_at_previously_changed? }
   after_create :create_interruption_event, if: -> { deactivated_at.present? } # needed in addition to the `after_save`. See https://github.com/gumroad/web/pull/26305#discussion_r1336425626
+  after_save :sync_inventory_counter_caches_for_purchases, if: -> { saved_change_to_deactivated_at? }
   after_commit :send_ended_notification_webhook, if: Proc.new { |subscription|
     subscription.deactivated_at.present? &&
       subscription.deactivated_at_previously_changed? &&
@@ -452,7 +452,7 @@ class Subscription < ApplicationRecord
 
   # creates a new original subscription purchase & archives the existing one.
   # Any changes to the subscription made here must be reverted in `Subscription::UpdaterService#restore_original_purchase`
-  def update_current_plan!(new_variants:, new_price:, new_quantity: nil, perceived_price_cents: nil, is_applying_plan_change: false, skip_preparing_for_charge: false)
+  def update_current_plan!(new_variants:, new_price:, new_quantity: nil, perceived_price_cents: nil, is_applying_plan_change: false, skip_preparing_for_charge: false, offer_code: nil, clear_discount: false)
     raise Subscription::UpdateFailed, "Installment plans cannot be updated." if is_installment_plan?
     raise Subscription::UpdateFailed, "Changing plans for fixed-length subscriptions is not currently supported." if has_fixed_length?
 
@@ -493,10 +493,26 @@ class Subscription < ApplicationRecord
       original_purchase.is_archived_original_subscription_purchase = true
       original_purchase.save!
 
-      if new_purchase.offer_code.present? && original_discount = original_purchase.purchase_offer_code_discount
-        new_purchase.build_purchase_offer_code_discount(offer_code: new_purchase.offer_code, offer_code_amount: original_discount.offer_code_amount,
-                                                        offer_code_is_percent: original_discount.offer_code_is_percent,
-                                                        pre_discount_minimum_price_cents: new_purchase.minimum_paid_price_cents_per_unit_before_discount)
+      if clear_discount
+        new_purchase.offer_code = nil
+        new_purchase.purchase_offer_code_discount = nil
+      elsif offer_code.present?
+        new_purchase.offer_code = offer_code
+        new_purchase.build_purchase_offer_code_discount(
+          offer_code: offer_code,
+          pre_discount_minimum_price_cents: new_purchase.minimum_paid_price_cents_per_unit_before_discount,
+          offer_code_amount: offer_code.amount,
+          offer_code_is_percent: offer_code.is_percent?,
+          duration_in_months: offer_code.duration_in_billing_cycles
+        )
+      elsif new_purchase.offer_code.present? && (original_discount = original_purchase.purchase_offer_code_discount)
+        new_purchase.build_purchase_offer_code_discount(
+          offer_code: new_purchase.offer_code,
+          pre_discount_minimum_price_cents: new_purchase.minimum_paid_price_cents_per_unit_before_discount,
+          offer_code_amount: original_discount.offer_code_amount,
+          offer_code_is_percent: original_discount.offer_code_is_percent,
+          duration_in_months: original_discount.duration_in_months
+        )
       end
 
       if original_purchase.recommended_purchase_info.present?
@@ -991,15 +1007,59 @@ class Subscription < ApplicationRecord
       @_cached_subscription_events ||= subscription_events.order(occurred_at: :asc).to_a
     end
 
-    def enable_flat_fee
-      self.flat_fee_applicable = true
-    end
-
     def enable_mor_fee
       self.mor_fee_applicable = true
     end
 
     def assign_seller
       self.seller_id = link.user_id
+    end
+
+    def sync_inventory_counter_caches_for_purchases
+      previous_deactivated_at, new_deactivated_at = saved_change_to_deactivated_at
+      sign = if previous_deactivated_at.nil? && new_deactivated_at.present?
+        -1
+      elsif previous_deactivated_at.present? && new_deactivated_at.nil?
+        1
+      else
+        0
+      end
+      return if sign.zero?
+
+      flag = Purchase.flag_mapping["flags"]
+      counting_states_sql = Purchase::COUNTS_TOWARDS_INVENTORY_STATES.map { |s| ActiveRecord::Base.connection.quote(s) }.join(",")
+      pending_ids = Purchase.inventory_pending_create_commit_ids.to_a
+      pending_clause = pending_ids.any? ? "AND p.id NOT IN (#{pending_ids.map(&:to_i).join(",")})" : ""
+      qualifying_purchase_conditions = <<~SQL.squish
+        p.subscription_id = #{id.to_i}
+        AND p.purchase_state IN (#{counting_states_sql})
+        AND (p.flags IS NULL OR p.flags & #{flag[:is_additional_contribution]} = 0)
+        AND (p.flags & #{flag[:is_archived_original_subscription_purchase]} = 0)
+        AND (p.flags & #{flag[:is_original_subscription_purchase]} != 0 OR p.flags & #{flag[:is_gift_receiver_purchase]} != 0)
+        #{pending_clause}
+      SQL
+
+      ActiveRecord::Base.connection.execute(<<~SQL.squish)
+        UPDATE base_variants bv
+        INNER JOIN (
+          SELECT bvp.base_variant_id AS id, SUM(p.quantity) AS total
+          FROM base_variants_purchases bvp
+          INNER JOIN purchases p ON p.id = bvp.purchase_id
+          WHERE #{qualifying_purchase_conditions}
+          GROUP BY bvp.base_variant_id
+        ) t ON t.id = bv.id
+        SET bv.sales_count_for_inventory_cache = bv.sales_count_for_inventory_cache + (#{sign} * t.total)
+      SQL
+
+      ActiveRecord::Base.connection.execute(<<~SQL.squish)
+        UPDATE links l
+        INNER JOIN (
+          SELECT p.link_id AS id, SUM(p.quantity) AS total
+          FROM purchases p
+          WHERE #{qualifying_purchase_conditions}
+          GROUP BY p.link_id
+        ) t ON t.id = l.id
+        SET l.sales_count_for_inventory_cache = l.sales_count_for_inventory_cache + (#{sign} * t.total)
+      SQL
     end
 end

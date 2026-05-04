@@ -74,6 +74,7 @@ export default function WishlistsPage() {
                       </span>
                     }
                     position="top"
+                    className="shrink-0"
                   >
                     <InfoCircle className="size-5" />
                   </WithTooltip>
@@ -89,7 +90,7 @@ export default function WishlistsPage() {
                       <h4>{wishlist.name}</h4>
                     </a>
                     <a href={wishlist.url} target="_blank" rel="noreferrer">
-                      <small>{wishlist.url}</small>
+                      <small className="block">{wishlist.url}</small>
                     </a>
                   </TableCell>
                   <TableCell>{wishlist.product_count}</TableCell>

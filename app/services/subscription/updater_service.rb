@@ -62,10 +62,6 @@ class Subscription::UpdaterService
           original_purchase.update!(params[:contact_info])
         end
 
-        if !same_plan_and_price? || (is_resubscribing && overdue_for_charge)
-          subscription.update!(flat_fee_applicable: true) unless subscription.flat_fee_applicable?
-        end
-
         # Update card if necessary
         unless use_existing_card?
           had_saved_card = subscription.credit_card.present?
@@ -94,12 +90,26 @@ class Subscription::UpdaterService
           end
         end
 
-        unless same_plan_and_price?
-          self.new_purchase = subscription.update_current_plan!( # here we have an error
+        original_discount = subscription.original_purchase.purchase_offer_code_discount
+        discount_changed = if params[:clear_discount]
+          true
+        elsif params[:offer_code].present? && original_discount.present?
+          params[:offer_code] != original_discount.offer_code ||
+            params[:offer_code].amount != original_discount.offer_code_amount ||
+            params[:offer_code].is_percent? != original_discount.offer_code_is_percent ||
+            params[:offer_code].duration_in_billing_cycles != original_discount.duration_in_billing_cycles
+        else
+          params[:offer_code].present?
+        end
+
+        if !same_plan_and_price? || (is_resubscribing && (discount_changed || price_changed?))
+          self.new_purchase = subscription.update_current_plan!(
             new_variants: variants,
             new_price: price,
             new_quantity: params[:quantity],
             perceived_price_cents: params[:price_range],
+            offer_code: params[:offer_code],
+            clear_discount: params[:clear_discount],
           )
           subscription.reload
         end
@@ -129,7 +139,13 @@ class Subscription::UpdaterService
           # made by `Subscription#update_current_plan!`
           restore_original_purchase!
           # If purchase is missing tier and user is not upgrading, associate default tier.
-          original_purchase.update!(variant_attributes: [product.default_tier]) if tiered_membership? && original_purchase.variant_attributes.empty?
+          if tiered_membership? && original_purchase.variant_attributes.empty?
+            default_tier = product.default_tier
+            original_purchase.update!(variant_attributes: [default_tier])
+            if original_purchase.counts_towards_inventory? && original_purchase.quantity.to_i > 0
+              BaseVariant.where(id: default_tier.id).update_all("sales_count_for_inventory_cache = sales_count_for_inventory_cache + #{original_purchase.quantity.to_i}")
+            end
+          end
         end
 
         # Restart subscription if necessary
@@ -305,7 +321,7 @@ class Subscription::UpdaterService
       return unless tiered_membership?
       return if same_plan_and_price?
       unless new_purchase.present?
-        Bugsnag.notify("SubscriptionUpdater: new_purchase missing when sending API notification")
+        ErrorNotifier.notify("SubscriptionUpdater: new_purchase missing when sending API notification")
         return
       end
 
@@ -402,6 +418,13 @@ class Subscription::UpdaterService
 
     def pwyw?
       variants.any? { |v| v.customizable_price? }
+    end
+
+    def price_changed?
+      return false if pwyw?
+      tier_price = subscription.send(:tier_price)
+      return false unless tier_price.present?
+      subscription.current_subscription_price_cents / original_purchase.quantity != tier_price.price_cents
     end
 
     def same_pwyw_price?

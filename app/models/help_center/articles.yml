@@ -252,7 +252,7 @@
 - id: 174
   slug: "174-third-party-analytics"
   title: "Third-party analytics"
-  description: "Google Analytics Cross-domain tracking Domain verification for Meta/Facebook Meta Pixel Snippets Google Ads 𝕏 / Twitter TikTok Google Analytics Google ended su"
+  description: "Google Analytics Cross-domain tracking Domain verification for Meta/Facebook Meta Pixel TikTok Pixel Snippets Google Ads 𝕏 / Twitter Google Analytics Google ended su"
   category_id: <%= HelpCenter::Category::ADVANCED.id %>
 - id: 176
   slug: "176-metadata-for-audio-files"
@@ -615,3 +615,8 @@
   title: "Support response times"
   description: "If you reach out to us, you'll most likely hear back within an hour. 97.7% of people do. We guarantee a response within 24 hours."
   category_id: <%= HelpCenter::Category::CONTACT_GUMROAD.id %>
+- id: 349
+  slug: "349-gdpr-data-requests"
+  title: "GDPR and data privacy requests"
+  description: "Learn about your data privacy rights on Gumroad, including how to request data deletion, access your personal data, and understand what information we retain."
+  category_id: <%= HelpCenter::Category::ADVANCED.id %>

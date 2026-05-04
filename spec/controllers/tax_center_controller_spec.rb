@@ -9,6 +9,7 @@ describe TaxCenterController, type: :controller, inertia: true do
   let(:seller) { create(:user, created_at: 2.years.ago) }
 
   before do
+    create(:user_compliance_info, user: seller)
     Feature.activate_user(:tax_center, seller)
   end
 
@@ -44,6 +45,20 @@ describe TaxCenterController, type: :controller, inertia: true do
     context "when tax_center feature is disabled" do
       before do
         Feature.deactivate_user(:tax_center, seller)
+      end
+
+      it "redirects to dashboard with alert" do
+        get :index
+
+        expect(response).to redirect_to(dashboard_path)
+        expect(flash[:alert]).to eq("Tax center is not enabled for your account.")
+      end
+    end
+
+    context "when seller is not from the US" do
+      before do
+        seller.alive_user_compliance_info.mark_deleted!
+        create(:user_compliance_info_singapore, user: seller)
       end
 
       it "redirects to dashboard with alert" do
@@ -188,6 +203,15 @@ describe TaxCenterController, type: :controller, inertia: true do
     context "when download fails from Stripe API" do
       before do
         allow_any_instance_of(StripeTaxFormsApi).to receive(:download_tax_form).and_return(nil)
+      end
+
+      it "redirects to the S3 download url if it is present" do
+        allow_any_instance_of(User).to receive(:tax_form_1099_download_url).and_return("https://example.com/tax1099k.pdf")
+
+        get :download, params: { year:, form_type: }
+
+        expect(response).to redirect_to("https://example.com/tax1099k.pdf")
+        expect(flash[:alert]).to be nil
       end
 
       it "redirects with error message" do

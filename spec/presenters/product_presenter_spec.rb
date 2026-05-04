@@ -284,7 +284,7 @@ describe ProductPresenter do
       product.user.reload
     end
 
-    it "returns the properties for the product edit page" do
+    it "returns the properties for the product edit page", :freeze_time do
       expect(presenter.edit_props).to eq(
         {
           product: {
@@ -535,7 +535,7 @@ describe ProductPresenter do
         Feature.activate_user(:cancellation_discounts, membership.user)
       end
 
-      it "returns the properties for the product edit page" do
+      it "returns the properties for the product edit page", :freeze_time do
         expect(presenter.edit_props).to eq(
           {
             product: {
@@ -794,7 +794,7 @@ describe ProductPresenter do
       let(:new_product) { create(:product, name: "Product", description: "Boring") }
       let(:presenter) { described_class.new(product: new_product, request:) }
 
-      it "returns the properties for the product edit page" do
+      it "returns the properties for the product edit page", :freeze_time do
         expect(presenter.edit_props).to eq(
           {
             product: {
@@ -983,14 +983,14 @@ describe ProductPresenter do
 
     it "passes compute_description parameter to the card presenter" do
       expect(ProductPresenter::Card).to receive(:new).with(product:).and_call_original
-      expect_any_instance_of(ProductPresenter::Card).to receive(:for_web).with(request:, recommended_by: "discover", recommender_model_name: nil, target: nil, show_seller: true, affiliate_id: nil, query: nil, offer_code: nil, compute_description: false)
+      expect_any_instance_of(ProductPresenter::Card).to receive(:for_web).with(request:, recommended_by: "discover", recommender_model_name: nil, target: nil, show_seller: true, affiliate_id: nil, query: nil, offer_code: nil, compute_description: false, compute_inventory: true)
 
       described_class.card_for_web(product:, request:, recommended_by: "discover", compute_description: false)
     end
 
     it "defaults compute_description to true when not provided" do
       expect(ProductPresenter::Card).to receive(:new).with(product:).and_call_original
-      expect_any_instance_of(ProductPresenter::Card).to receive(:for_web).with(request:, recommended_by: "discover", recommender_model_name: nil, target: nil, show_seller: true, affiliate_id: nil, query: nil, offer_code: nil, compute_description: true)
+      expect_any_instance_of(ProductPresenter::Card).to receive(:for_web).with(request:, recommended_by: "discover", recommender_model_name: nil, target: nil, show_seller: true, affiliate_id: nil, query: nil, offer_code: nil, compute_description: true, compute_inventory: true)
 
       described_class.card_for_web(product:, request:, recommended_by: "discover")
     end

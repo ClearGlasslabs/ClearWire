@@ -88,6 +88,7 @@ module Purchase::Searchable
       indexes :ip_state, type: :keyword
       indexes :referrer_domain, type: :keyword
       indexes :license_serial, type: :keyword
+      indexes :license_uses, type: :long
       # one-to-many associations
       indexes :variant_ids, type: :long
       # computed associations
@@ -148,6 +149,8 @@ module Purchase::Searchable
       "card_visual" => "paypal_email",
       "subscription_id" => "subscription_id",
       "license_serial" => "license_serial",
+      "license_uses" => "license_uses",
+      "purchaser_id" => "purchaser_id",
     }
 
     def search_field_value(field_name)
@@ -223,6 +226,8 @@ module Purchase::Searchable
         card_visual&.downcase if card_type == CardType::PAYPAL
       when "license_serial"
         license&.serial
+      when "license_uses"
+        license&.uses
       end.as_json
     end
   end

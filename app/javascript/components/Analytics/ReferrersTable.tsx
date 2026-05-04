@@ -4,7 +4,6 @@ import { formatPriceCentsWithCurrencySymbol } from "$app/utils/currency";
 
 import { type AnalyticsReferrerTotals } from "$app/components/Analytics";
 import { Button } from "$app/components/Button";
-import { InputGroup } from "$app/components/ui/InputGroup";
 import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow } from "$app/components/ui/Table";
 import { useClientSortingTableDriver } from "$app/components/useSortingTableDriver";
 
@@ -35,10 +34,10 @@ export const ReferrersTable = ({ data }: { data: AnalyticsReferrerTotals }) => {
   }, [data]);
 
   return (
-    <section className="flex flex-col gap-4">
+    <section>
       <Table>
         <TableCaption>
-          <a href="/help/article/74-the-analytics-dashboard" target="_blank" rel="noreferrer">
+          <a href="/help/article/74-the-analytics-dashboard#Referrers-WBsBP" target="_blank" rel="noreferrer">
             Referrer
           </a>
         </TableCaption>
@@ -52,25 +51,30 @@ export const ReferrersTable = ({ data }: { data: AnalyticsReferrerTotals }) => {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {items.slice(0, maxRowsShown).map(({ referrer, sales, views, totals, conversion }) => (
-            <TableRow key={referrer}>
-              <TableCell>{referrer === "direct" ? "Direct, email, IM" : referrer}</TableCell>
-              <TableCell>{views}</TableCell>
-              <TableCell>{sales}</TableCell>
-              <TableCell>{`${(conversion * 100).toFixed(1).replace(".0", "")}%`}</TableCell>
-              <TableCell>
-                {formatPriceCentsWithCurrencySymbol("usd", totals, { symbolFormat: "short", noCentsIfWhole: true })}
-              </TableCell>
+          {items.length ? (
+            items.slice(0, maxRowsShown).map(({ referrer, sales, views, totals, conversion }) => (
+              <TableRow key={referrer}>
+                <TableCell>{referrer === "direct" ? "Direct, email, IM" : referrer}</TableCell>
+                <TableCell>{views}</TableCell>
+                <TableCell>{sales}</TableCell>
+                <TableCell>{`${(conversion * 100).toFixed(1).replace(".0", "")}%`}</TableCell>
+                <TableCell>
+                  {formatPriceCentsWithCurrencySymbol("usd", totals, { symbolFormat: "short", noCentsIfWhole: true })}
+                </TableCell>
+              </TableRow>
+            ))
+          ) : (
+            <TableRow>
+              <TableCell colSpan={5}>Nothing yet</TableCell>
             </TableRow>
-          ))}
+          )}
         </TableBody>
       </Table>
       {items.length > maxRowsShown && (
-        <Button onClick={() => setMaxRowsShown(maxRowsShown + ROWS_PER_PAGE)} className="flex">
+        <Button onClick={() => setMaxRowsShown(maxRowsShown + ROWS_PER_PAGE)} className="mt-4 flex">
           Show more
         </Button>
       )}
-      {items.length ? null : <InputGroup>Nothing yet</InputGroup>}
     </section>
   );
 };

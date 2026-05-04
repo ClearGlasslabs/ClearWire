@@ -1200,14 +1200,6 @@ describe Purchase, :vcr do
     end
   end
 
-  describe "mongoable" do
-    it "puts purchase in mongo on creation" do
-      @purchase = build(:purchase)
-      @purchase.save
-
-      expect(SaveToMongoWorker).to have_enqueued_sidekiq_job("Purchase", anything)
-    end
-  end
 
   describe "affiliate_merchant_account" do
     describe "purchase is on a Gumroad merchant account" do
@@ -1744,7 +1736,7 @@ describe Purchase, :vcr do
     end
 
     {
-      user_suspended: ->(u, _l) { u.suspend_for_fraud },
+      user_suspended: ->(u, _l) { u.suspend_for_fraud(author_name: "Admin") },
       link_disabled: ->(_u, l) { l.purchase_disabled_at = Time.current },
       link_deleted: ->(_u, l) { l.deleted_at = Time.current }
     }.each do |k, v|
@@ -1766,84 +1758,6 @@ describe Purchase, :vcr do
     end
   end
 
-  describe "tier fee" do
-    def create_purchase(is_merchant: false, charge_discover_fee: false, price_cents: 0, discover_fee_per_thousand: nil)
-      creator = create(:user)
-
-      allow_any_instance_of(User).to receive(:recommendations_enabled?).and_return(charge_discover_fee)
-      allow_any_instance_of(Purchase).to receive(:charged_using_gumroad_merchant_account?).and_return(is_merchant)
-      allow_any_instance_of(Purchase).to receive(:flat_fee_applicable?).and_return(false)
-      product = build(:product, user: creator)
-      product.discover_fee_per_thousand = discover_fee_per_thousand if discover_fee_per_thousand
-      product.save
-      purchase = create(:purchase, link: product, was_product_recommended: charge_discover_fee, price_cents: 10_00)
-      purchase
-    end
-
-    context "non-merchant account" do
-      context "discover purchase" do
-        it "uses correct tier fee" do
-          purchase = create_purchase(charge_discover_fee: true, price_cents: 10_00)
-
-          tier_fee = 70
-          discover_fee = 200
-          expect(purchase.fee_cents).to eq(tier_fee + discover_fee)
-        end
-      end
-
-      context "discover ad purchase" do
-        it "uses correct discover fee" do
-          purchase = create_purchase(charge_discover_fee: true, price_cents: 10_00, discover_fee_per_thousand: 300)
-
-          tier_fee = 70
-          discover_fee = 200
-          expect(purchase.fee_cents).to eq(tier_fee + discover_fee)
-        end
-      end
-
-      context "non-discover purchase" do
-        it "uses correct tier fee" do
-          purchase = create_purchase(charge_discover_fee: false, price_cents: 10_00)
-
-          tier_fee = 120
-          expect(purchase.fee_cents).to eq(tier_fee)
-        end
-      end
-    end
-
-    context "merchant account" do
-      context "discover purchase" do
-        it "uses correct tier fee" do
-          purchase = create_purchase(is_merchant: true, charge_discover_fee: true, price_cents: 10_00)
-
-          tier_fee = 90
-          discover_fee = 171
-          expect(purchase.fee_cents).to eq(tier_fee + discover_fee)
-        end
-      end
-
-      context "discover purchase" do
-        it "uses correct discover fee" do
-          purchase = create_purchase(is_merchant: true, charge_discover_fee: true, price_cents: 10_00, discover_fee_per_thousand: 300)
-
-          tier_fee = 90
-          discover_fee = 171
-          expect(purchase.fee_cents).to eq(tier_fee + discover_fee)
-        end
-      end
-
-      context "non-discover purchase" do
-        it "uses correct tier fee" do
-          purchase = create_purchase(is_merchant: true, charge_discover_fee: false, price_cents: 10_00)
-
-          tier_fee = 90
-          fixed_fee = 80
-          expect(purchase.fee_cents).to eq(tier_fee + fixed_fee)
-        end
-      end
-    end
-  end
-
   describe "new flat fee" do
     before do
       @creator = create(:user)
@@ -1855,7 +1769,6 @@ describe Purchase, :vcr do
         purchase = create(:purchase, link: @product, purchase_state: "in_progress", chargeable: create(:chargeable))
         purchase.process!
 
-        expect(purchase.send(:flat_fee_applicable?)).to be true
         expect(purchase.charge_processor_id).to eq(StripeChargeProcessor.charge_processor_id)
         expect(purchase.fee_cents).to eq(209) # 100 (10pc gumroad fee) + 50c + 29 (2.9 pc stripe fee) + 30 (30c fixed stripe fee)
       end
@@ -1868,7 +1781,6 @@ describe Purchase, :vcr do
         purchase = create(:purchase, link: @product, purchase_state: "in_progress", chargeable: create(:chargeable))
         purchase.process!
 
-        expect(purchase.send(:flat_fee_applicable?)).to be true
         expect(purchase.charge_processor_id).to eq(StripeChargeProcessor.charge_processor_id)
         expect(purchase.merchant_account).to eq(merchant_account)
         expect(purchase.fee_cents).to eq(209) # 100 (10pc gumroad fee) + 50c + 29 (2.9 pc stripe fee) + 30 (30c fixed stripe fee)
@@ -1882,7 +1794,6 @@ describe Purchase, :vcr do
         purchase = create(:purchase, link: @product, purchase_state: "in_progress", chargeable: create(:native_paypal_chargeable))
         purchase.process!
 
-        expect(purchase.send(:flat_fee_applicable?)).to be true
         expect(purchase.charge_processor_id).to eq(PaypalChargeProcessor.charge_processor_id)
         expect(purchase.merchant_account).to eq(merchant_account)
         expect(purchase.fee_cents).to eq(150) # 100 (10pc gumroad fee) + 50c
@@ -1894,7 +1805,6 @@ describe Purchase, :vcr do
         purchase = create(:purchase, link: @product, purchase_state: "in_progress", chargeable: create(:paypal_chargeable))
         purchase.process!
 
-        expect(purchase.send(:flat_fee_applicable?)).to be true
         expect(purchase.charge_processor_id).to eq(BraintreeChargeProcessor.charge_processor_id)
         expect(purchase.fee_cents).to eq(209) # 100 (10pc gumroad fee) + 50c + 29 (2.9 pc paypal fee) + 30 (30c fixed paypal fee)
       end
@@ -1907,13 +1817,11 @@ describe Purchase, :vcr do
       stripe_purchase = create(:purchase, link: @product, purchase_state: "in_progress", was_product_recommended: true, chargeable: create(:chargeable))
       stripe_purchase.process!
       expect(stripe_purchase.reload.charge_processor_id).to eq(StripeChargeProcessor.charge_processor_id)
-      expect(stripe_purchase.send(:flat_fee_applicable?)).to be true
       expect(stripe_purchase.fee_cents).to eq(300) # flat 30% discover fee
 
       braintree_purchase = create(:purchase, link: @product, purchase_state: "in_progress", was_product_recommended: true, chargeable: create(:paypal_chargeable))
       braintree_purchase.process!
       expect(braintree_purchase.reload.charge_processor_id).to eq(BraintreeChargeProcessor.charge_processor_id)
-      expect(braintree_purchase.send(:flat_fee_applicable?)).to be true
       expect(braintree_purchase.fee_cents).to eq(300) # flat 30% discover fee
 
       Feature.activate_user(:merchant_migration, @creator)
@@ -1921,7 +1829,6 @@ describe Purchase, :vcr do
       stripe_connect_purchase = create(:purchase, link: @product, purchase_state: "in_progress", was_product_recommended: true, chargeable: create(:chargeable, product_permalink: @product.unique_permalink))
       stripe_connect_purchase.process!
       expect(stripe_connect_purchase.reload.charge_processor_id).to eq(StripeChargeProcessor.charge_processor_id)
-      expect(stripe_connect_purchase.send(:flat_fee_applicable?)).to be true
       expect(stripe_connect_purchase.merchant_account).to eq(stripe_connect_account)
       expect(stripe_connect_purchase.fee_cents).to eq(300) # flat 30% discover fee
       Feature.deactivate_user(:merchant_migration, @creator)
@@ -1930,7 +1837,6 @@ describe Purchase, :vcr do
       paypal_connect_purchase = create(:purchase, link: @product, purchase_state: "in_progress", was_product_recommended: true, chargeable: create(:native_paypal_chargeable))
       paypal_connect_purchase.process!
       expect(paypal_connect_purchase.reload.charge_processor_id).to eq(PaypalChargeProcessor.charge_processor_id)
-      expect(paypal_connect_purchase.send(:flat_fee_applicable?)).to be true
       expect(paypal_connect_purchase.merchant_account).to eq(paypal_connect_account)
       expect(paypal_connect_purchase.fee_cents).to eq(300) # flat 30% discover fee
     end
@@ -2641,17 +2547,6 @@ describe Purchase, :vcr do
     end
   end
 
-  describe "check purchase heuristics after purchase" do
-    it "queue up job to assess risk of purchase after purchase" do
-      user = create(:user)
-      product = create(:product, user:)
-      purchase = create(:purchase, link: product, card_country: "US", ip_address: "110.227.155.107")
-      purchase.send(:check_purchase_heuristics)
-
-      expect(CheckPurchaseHeuristicsWorker).to have_enqueued_sidekiq_job(purchase.id)
-    end
-  end
-
   describe "#purchase_info" do
     let(:link) { create(:product_with_pdf_file) }
     let(:purchase) { create(:purchase, link:) }
@@ -3341,6 +3236,7 @@ describe Purchase, :vcr do
           license_key: license.serial,
           license_id: license.external_id,
           license_disabled: false,
+          license_uses: 0,
           is_multiseat_license: false,
         })
       end
@@ -3354,6 +3250,7 @@ describe Purchase, :vcr do
             license_key: license.serial,
             license_id: license.external_id,
             license_disabled: false,
+            license_uses: 0,
             is_multiseat_license: false
           })
         end
@@ -3369,6 +3266,7 @@ describe Purchase, :vcr do
             license_key: license.serial,
             license_id: license.external_id,
             license_disabled: false,
+            license_uses: 0,
             is_multiseat_license: true
           })
         end
@@ -4084,28 +3982,28 @@ describe Purchase, :vcr do
     end
 
     it "is false if the purchase is not recommended" do
-      expect(@purchase.send(:charge_discover_fee?)).to eq(false)
+      expect(@purchase.charge_discover_fee?).to eq(false)
     end
 
     it "returns true if the purchase is recommended" do
       @purchase.was_product_recommended = true
       @purchase.save
-      expect(@purchase.send(:charge_discover_fee?)).to eq(true)
+      expect(@purchase.charge_discover_fee?).to eq(true)
       @purchase.seller.recommendation_type = User::RecommendationType::NO_RECOMMENDATIONS
       @purchase.seller.save
-      expect(@purchase.send(:charge_discover_fee?)).to eq(true)
+      expect(@purchase.charge_discover_fee?).to eq(true)
     end
 
     it "returns false if the purchase is recommended by library or more like this" do
-      expect(@purchase.send(:charge_discover_fee?)).to eq(false)
+      expect(@purchase.charge_discover_fee?).to eq(false)
 
       @purchase.update!(was_product_recommended: true)
-      expect(@purchase.send(:charge_discover_fee?)).to eq(true)
+      expect(@purchase.charge_discover_fee?).to eq(true)
 
       RecommendationType.all.each do |recommendation_type|
         @purchase.update!(recommended_by: recommendation_type)
         expect(@purchase.was_product_recommended?).to eq(true)
-        expect(@purchase.send(:charge_discover_fee?)).to eq(!RecommendationType.is_free_recommendation_type?(recommendation_type))
+        expect(@purchase.charge_discover_fee?).to eq(!RecommendationType.is_free_recommendation_type?(recommendation_type))
       end
     end
   end
@@ -4364,57 +4262,6 @@ describe Purchase, :vcr do
     end
   end
 
-  describe "#trigger_iffy_moderation" do
-    let(:purchase) { build(:purchase_in_progress, price_cents: 1000) }
-
-    before { $redis.set(RedisKey.iffy_moderation_probability, "0.5") }
-
-    context "when random number is less than probability" do
-      before do
-        $redis.set(RedisKey.iffy_moderation_probability, "0.5")
-        allow(purchase).to receive(:rand).and_return(0.4)
-      end
-
-      it "enqueues Iffy::Product::IngestJob" do
-        purchase.update_balance_and_mark_successful!
-        expect(Iffy::Product::IngestJob).to have_enqueued_sidekiq_job(purchase.link.id)
-      end
-    end
-
-    it "does not enqueue Iffy::Product::IngestJob when random number is higher than probability" do
-      allow(purchase).to receive(:rand).and_return(0.6)
-      purchase.update_balance_and_mark_successful!
-      expect(Iffy::Product::IngestJob).not_to have_enqueued_sidekiq_job(purchase.link.id)
-    end
-
-    context "when purchase is free" do
-      let(:purchase) { build(:purchase_in_progress, price_cents: 0) }
-
-      it "does not enqueue Iffy::Product::IngestJob" do
-        purchase.update_balance_and_mark_successful!
-        expect(Iffy::Product::IngestJob).not_to have_enqueued_sidekiq_job(purchase.link.id)
-      end
-    end
-
-    context "when iffy_moderation_probability redis key is not set" do
-      before { $redis.del(RedisKey.iffy_moderation_probability) }
-
-      it "uses probability of 0" do
-        allow(purchase).to receive(:rand).and_return(0)
-        purchase.update_balance_and_mark_successful!
-        expect(Iffy::Product::IngestJob).not_to have_enqueued_sidekiq_job(purchase.link.id)
-      end
-    end
-
-    context "when product has already been moderated by iffy" do
-      let(:purchase) { build(:purchase_in_progress, price_cents: 1000, link: create(:product, moderated_by_iffy: true)) }
-
-      it "does not enqueue Iffy::Product::IngestJob" do
-        purchase.update_balance_and_mark_successful!
-        expect(Iffy::Product::IngestJob).not_to have_enqueued_sidekiq_job(purchase.link.id)
-      end
-    end
-  end
 
   describe ".formatted_error_code" do
     it "falls back to purchase.stripe_error_code" do
@@ -4772,58 +4619,6 @@ describe Purchase, :vcr do
     end
   end
 
-
-  describe "#flat_fee_applicable?" do
-    before do
-      @creator = create(:user, created_at: Date.new(2022, 12, 15))
-    end
-
-    it "returns true for regular product purchase" do
-      purchase = create(:purchase, link: create(:product, user: @creator))
-
-      expect(purchase.send(:flat_fee_applicable?)).to be true
-    end
-
-    it "returns false for original subscription purchase if flat fee is not applicable to the subscription" do
-      product = create(:product, user: @creator)
-      subscription = create(:subscription, link: product)
-      subscription.update!(flat_fee_applicable: false)
-
-      original_purchase = create(:purchase, link: product, subscription:, is_original_subscription_purchase: true)
-
-      expect(original_purchase.send(:flat_fee_applicable?)).to be false
-    end
-
-    it "returns true for original subscription purchase if flat fee is applicable to the subscription" do
-      product = create(:product, user: @creator)
-      subscription = create(:subscription, link: product)
-
-      original_purchase = create(:purchase, link: product, subscription:, is_original_subscription_purchase: true)
-
-      expect(original_purchase.send(:flat_fee_applicable?)).to be true
-    end
-
-    it "returns false for recurring charge if flat fee is not applicable to the subscription" do
-      product = create(:product, user: @creator)
-      subscription = create(:subscription, link: product)
-      subscription.update!(flat_fee_applicable: false)
-
-      create(:purchase, link: product, subscription:, is_original_subscription_purchase: true)
-      recurring_charge = create(:purchase, link: product, subscription:, is_original_subscription_purchase: false)
-
-      expect(recurring_charge.send(:flat_fee_applicable?)).to be false
-    end
-
-    it "returns true for recurring charge if flat fee is applicable to the subscription" do
-      product = create(:product, user: @creator)
-      subscription = create(:subscription, link: product)
-
-      create(:purchase, link: product, subscription:, is_original_subscription_purchase: true)
-      recurring_charge = create(:purchase, link: product, subscription:, is_original_subscription_purchase: false)
-
-      expect(recurring_charge.send(:flat_fee_applicable?)).to be true
-    end
-  end
 
   describe "#paypal_refund_expired?" do
     before do
@@ -6523,10 +6318,22 @@ describe Purchase, :vcr do
         end
       end
 
-      context "when original subscription purchase did not have a custom fee" do
-        it "does not set a custom fee" do
-          original_subscription_purchase.seller.update!(custom_fee_per_thousand: 75)
+      context "when original subscription purchase did not have a custom fee but the seller has one set" do
+        it "falls back to the seller's custom fee" do
+          recurring_purchase = create(:purchase, subscription:, is_original_subscription_purchase: false)
+          recurring_purchase.seller.update!(custom_fee_per_thousand: 75)
           expect(original_subscription_purchase.custom_fee_per_thousand).to be_nil
+          expect(recurring_purchase.reload.custom_fee_per_thousand).to be_nil
+
+          recurring_purchase.send(:calculate_custom_fee_per_thousand)
+          expect(recurring_purchase.custom_fee_per_thousand).to eq(75)
+        end
+      end
+
+      context "when neither the original subscription purchase nor the seller has a custom fee" do
+        it "does not set a custom fee" do
+          expect(original_subscription_purchase.custom_fee_per_thousand).to be_nil
+          expect(original_subscription_purchase.seller.custom_fee_per_thousand).to be_nil
 
           recurring_purchase = create(:purchase, subscription:, is_original_subscription_purchase: false)
           expect(recurring_purchase.reload.custom_fee_per_thousand).to be_nil
@@ -6633,4 +6440,94 @@ describe Purchase, :vcr do
       end
     end
   end
+
+  describe ".validate_offer_code_usage_across_line_items" do
+    let(:seller) { create(:user) }
+    let(:product) { create(:product, user: seller, price_cents: 1_000) }
+
+    def build_in_progress_purchase(offer_code:)
+      purchase = build(:purchase_in_progress, link: product, seller:, offer_code:, quantity: 1)
+      purchase.save(validate: false)
+      purchase
+    end
+
+    it "fails every line item when the cart collectively exceeds max_purchase_count" do
+      offer_code = create(:offer_code, products: [product], code: "once", amount_cents: 100, max_purchase_count: 1)
+      purchases = [build_in_progress_purchase(offer_code:), build_in_progress_purchase(offer_code:)]
+
+      Purchase.validate_offer_code_usage_across_line_items(purchases)
+
+      purchases.each do |purchase|
+        expect(purchase.reload.purchase_state).to eq "failed"
+        expect(purchase.error_code).to eq PurchaseErrorCode::EXCEEDING_OFFER_CODE_QUANTITY
+        expect(purchase.errors[:base].first).to match(/quantity you have selected/)
+      end
+    end
+
+    it "leaves line items alone when the cart fits within max_purchase_count" do
+      offer_code = create(:offer_code, products: [product], code: "plenty", amount_cents: 100, max_purchase_count: 5)
+      purchases = [build_in_progress_purchase(offer_code:), build_in_progress_purchase(offer_code:)]
+
+      Purchase.validate_offer_code_usage_across_line_items(purchases)
+
+      purchases.each do |purchase|
+        expect(purchase.reload.purchase_state).to eq "in_progress"
+        expect(purchase.error_code).to be_nil
+      end
+    end
+
+    it "skips single-line carts (already handled by per-purchase validation)" do
+      offer_code = create(:offer_code, products: [product], code: "single", amount_cents: 100, max_purchase_count: 1)
+      purchase = build_in_progress_purchase(offer_code:)
+
+      Purchase.validate_offer_code_usage_across_line_items([purchase])
+
+      expect(purchase.reload.purchase_state).to eq "in_progress"
+    end
+  end
+
+  describe "#auto_delete_single_use_offer_code" do
+    before do
+      @user = create(:user)
+      @product = create(:product, user: @user, price_cents: 1000)
+    end
+
+    it "auto-deletes a single-use offer code after a successful purchase" do
+      offer_code = create(:offer_code, products: [@product], max_purchase_count: 1)
+      create(:purchase, offer_code:, link: @product, seller: @user, price_cents: @product.price_cents)
+
+      expect(offer_code.reload).to be_deleted
+    end
+
+    it "does not auto-delete offer codes for non-successful purchases" do
+      offer_code = create(:offer_code, products: [@product], max_purchase_count: 1)
+      create(:failed_purchase, offer_code:, link: @product, seller: @user, price_cents: @product.price_cents)
+
+      expect(offer_code.reload).not_to be_deleted
+    end
+
+    it "does not auto-delete when the purchase has no offer code" do
+      purchase = create(:purchase, link: @product, seller: @user, price_cents: @product.price_cents)
+
+      expect(purchase).to be_persisted
+    end
+
+    it "does not auto-delete multi-use offer codes" do
+      offer_code = create(:offer_code, products: [@product], max_purchase_count: 3)
+      create(:purchase, offer_code:, link: @product, seller: @user, price_cents: @product.price_cents)
+
+      expect(offer_code.reload).not_to be_deleted
+    end
+
+    it "does not break the purchase flow if auto-delete raises an error" do
+      offer_code = create(:offer_code, products: [@product], max_purchase_count: 1)
+      allow_any_instance_of(OfferCode).to receive(:auto_delete_if_single_use_exhausted!).and_raise(StandardError, "unexpected error")
+
+      purchase = create(:purchase, offer_code:, link: @product, seller: @user, price_cents: @product.price_cents)
+
+      expect(purchase).to be_persisted
+      expect(offer_code.reload).not_to be_deleted
+    end
+  end
+
 end

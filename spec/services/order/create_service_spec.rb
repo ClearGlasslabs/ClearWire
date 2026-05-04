@@ -237,11 +237,7 @@ describe Order::CreateService, :vcr do
         }.merge(common_order_params_without_payment)
       end
 
-      it "passes stripe_customer_id and stripe_setup_intent_id through to the subscription restart in a multi-seller cart" do
-        # In a multi-seller cart, prepareFutureCharges() creates a SetupIntent and the
-        # customer completes SCA upfront. The resulting stripe_customer_id and
-        # stripe_setup_intent_id must reach UpdaterService so the restart charge can
-        # reference the prior authentication and avoid a second SCA prompt.
+      it "treats submitted checkout payment data as a new card during subscription restart in a multi-seller cart" do
         multi_seller_params = {
           line_items: [
             {
@@ -260,14 +256,14 @@ describe Order::CreateService, :vcr do
           ],
           stripe_payment_method_id: "pm_123",
           stripe_customer_id: "cus_123",
-          stripe_setup_intent_id: "seti_123",
-          card_data_handling_mode: "stripe_elements"
+          stripe_setup_intent_id: "seti_123"
         }.merge(common_order_params_without_payment)
 
         updater_service = instance_double(Subscription::UpdaterService)
         expect(Subscription::UpdaterService).to receive(:new).with(
           subscription: subscription,
           params: hash_including(
+            use_existing_card: false,
             stripe_customer_id: "cus_123",
             stripe_setup_intent_id: "seti_123",
             stripe_payment_method_id: "pm_123"
@@ -278,7 +274,10 @@ describe Order::CreateService, :vcr do
         ).and_return(updater_service)
         allow(updater_service).to receive(:perform).and_return({ success: true, success_message: "Membership restarted" })
 
-        order, purchase_responses, _ = Order::CreateService.new(params: multi_seller_params, buyer:).perform
+        order, purchase_responses, _ = Order::CreateService.new(
+          params: ActionController::Parameters.new(multi_seller_params).permit!,
+          buyer:
+        ).perform
 
         expect(purchase_responses["unique-id-0"]).to include(success: true)
         # The regular product from seller_2 should still be in the order
@@ -338,7 +337,7 @@ describe Order::CreateService, :vcr do
           requires_card_action: true,
           client_secret: "pi_123_secret_456"
         )
-        expect(sca_response[:order][:id]).to eq(order.external_id)
+        expect(Order.find_by_secure_external_id(sca_response[:order][:id], scope: "confirm")).to eq(order)
         expect(sca_response[:order][:stripe_connect_account_id]).to eq(merchant_account.charge_processor_merchant_id)
         # The SCA upgrade purchase is added to the order for the confirm endpoint
         expect(order.purchases.in_progress.count).to eq(2)

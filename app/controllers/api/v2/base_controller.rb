@@ -4,6 +4,10 @@ class Api::V2::BaseController < ApplicationController
   after_action :log_method_use
 
   private
+    def doorkeeper_authorize!(*scopes)
+      super(*scopes, :account)
+    end
+
     def fetch_product
       products = current_resource_owner.links
       @product = products.find_by_external_id(params[:link_id]) || products.find_by(unique_permalink: params[:link_id]) || error_with_object(:product, nil)
@@ -61,6 +65,22 @@ class Api::V2::BaseController < ApplicationController
       return unless doorkeeper_token.present?
 
       Rails.logger.info("api v2 user:#{current_resource_owner.id} token:#{doorkeeper_token.id} in #{params[:controller]}##{params[:action]}")
+
+      mark_cli_user
+    end
+
+    def mark_cli_user
+      return unless request_from_cli?
+      return if current_resource_owner.has_used_cli?
+
+      mask = User.flag_mapping["flags"][:has_used_cli]
+      User.where(id: current_resource_owner.id).where("flags & ? = 0", mask).update_all(["flags = flags | ?", mask])
+    rescue => e
+      Rails.logger.error("Failed to mark CLI user: #{e.message}")
+    end
+
+    def request_from_cli?
+      request.user_agent&.match?(/\Agumroad-cli\//i)
     end
 
     def next_page_url(page_key)
@@ -86,5 +106,42 @@ class Api::V2::BaseController < ApplicationController
         next_page_key:,
         next_page_url: next_page_url(next_page_key)
       }
+    end
+
+    def unwrap_description_content(description)
+      if description.respond_to?(:key?) && description.key?(:content)
+        description[:content] || []
+      else
+        Array(description)
+      end
+    end
+
+    def retire_upsells_from_rich_contents!(rich_contents)
+      upsell_ids = rich_contents.flat_map do |rc|
+        rc.description.filter_map { |node| node["type"] == "upsellCard" ? node.dig("attrs", "id") : nil }
+      end
+      return if upsell_ids.empty?
+
+      current_resource_owner.upsells.by_external_ids(upsell_ids).find_each do |upsell|
+        upsell.offer_code&.mark_deleted!
+        upsell.mark_deleted!
+      end
+    end
+
+    def normalize_params_recursively(obj)
+      case obj
+      when ActionController::Parameters
+        normalize_params_recursively(obj.to_unsafe_h)
+      when Hash
+        if obj.keys.all? { |k| k.to_s.match?(/\A\d+\z/) }
+          obj.sort_by { |k, _| k.to_i }.map { |_, v| normalize_params_recursively(v) }
+        else
+          obj.transform_values { |v| normalize_params_recursively(v) }.with_indifferent_access
+        end
+      when Array
+        obj.map { |v| normalize_params_recursively(v) }
+      else
+        obj
+      end
     end
 end

@@ -31,7 +31,6 @@ class RedisKey
     def impersonated_user(admin_user_id) = "impersonated_user_by_admin_#{admin_user_id}"
     def gumroad_day_date = "gumroad_day_date"
     def update_cached_srpis_job_delay_hours = "update_cached_srpis_job_delay_hours"
-    def iffy_moderation_probability = "iffy_moderation_probability"
     def tip_options = "tip_options"
     def default_tip_option = "default_tip_option"
     def create_canada_monthly_sales_report_job_max_execution_time_seconds = "create_canada_monthly_sales_report_job:max_execution_time_seconds"
@@ -51,5 +50,8 @@ class RedisKey
     def unreviewed_users_cutoff_date = "admin:unreviewed_users_cutoff_date"
     def paypal_topup_needed = "paypal:topup_needed"
     def email_router_fallback(user_id) = "email_router_fallback:#{user_id}"
+    def mobile_minimum_version = "mobile:minimum_version"
+    def mobile_minimum_update_created_at = "mobile:minimum_update_created_at"
+    def gmail_abuse_normalized_emails = "gmail_abuse:normalized_emails"
   end
 end

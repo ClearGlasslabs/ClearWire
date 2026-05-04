@@ -79,6 +79,7 @@ describe Purchase::Searchable do
         "subscription_deactivated_at" => nil,
         "taxonomy_id" => nil,
         "license_serial" => @purchase.license.serial,
+        "license_uses" => @purchase.license.uses,
       )
 
       @product.default_price.update!(recurrence: "yearly")
@@ -520,6 +521,28 @@ describe Purchase::Searchable do
       product.update!(taxonomy: taxonomies.last)
       expect(get_document_attributes(purchases.first)["taxonomy_id"]).to eq(taxonomies.last.id)
       expect(get_document_attributes(purchases.last)["taxonomy_id"]).to eq(taxonomies.last.id)
+    end
+  end
+
+  describe "purchaser_id reindexing" do
+    it "enqueues ES update when purchaser_id changes" do
+      purchase = create(:purchase, purchaser: nil)
+      ElasticsearchIndexerWorker.jobs.clear
+
+      user = create(:user)
+      purchase.update!(purchaser: user)
+
+      expect(ElasticsearchIndexerWorker).to have_enqueued_sidekiq_job("update", hash_including("record_id" => purchase.id, "class_name" => "Purchase", "fields" => ["purchaser_id"]))
+    end
+
+    it "updates purchaser_id in Elasticsearch document", :sidekiq_inline, :elasticsearch_wait_for_refresh do
+      purchase = create(:purchase, purchaser: nil)
+      expect(get_document_attributes(purchase)["purchaser_id"]).to be_nil
+
+      user = create(:user)
+      purchase.update!(purchaser: user)
+
+      expect(get_document_attributes(purchase)["purchaser_id"]).to eq(user.id)
     end
   end
 

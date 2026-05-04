@@ -126,10 +126,6 @@ describe Order::ChargeService, :vcr do
       }
     end
 
-    before do
-      allow_any_instance_of(Purchase).to receive(:flat_fee_applicable?).and_return(true)
-    end
-
     it "charges all purchases in the order with the payment method provided in params" do
       create(:merchant_account, user: seller_1, charge_processor_merchant_id: create_verified_stripe_account(country: "US").id)
 
@@ -344,10 +340,10 @@ describe Order::ChargeService, :vcr do
       charge_responses = Order::ChargeService.new(order:, params:).perform
       expect(order.purchases.in_progress.count).to eq(2)
       expect(charge_responses.size).to eq(2)
-      expect(charge_responses[charge_responses.keys[0]]).to include(success: true, requires_card_action: true, client_secret: anything,
-                                                                    order: { id: order.external_id, stripe_connect_account_id: nil })
-      expect(charge_responses[charge_responses.keys[1]]).to include(success: true, requires_card_action: true, client_secret: anything,
-                                                                    order: { id: order.external_id, stripe_connect_account_id: nil })
+      expect(charge_responses[charge_responses.keys[0]]).to include(success: true, requires_card_action: true, client_secret: anything)
+      expect(Order.find_by_secure_external_id(charge_responses[charge_responses.keys[0]][:order][:id], scope: "confirm")).to eq(order)
+      expect(charge_responses[charge_responses.keys[1]]).to include(success: true, requires_card_action: true, client_secret: anything)
+      expect(Order.find_by_secure_external_id(charge_responses[charge_responses.keys[1]][:order][:id], scope: "confirm")).to eq(order)
     end
 
     it "creates multiple charges in case of purchases from different sellers" do
@@ -731,6 +727,537 @@ describe Order::ChargeService, :vcr do
     end
   end
 
+  describe "#ensure_all_purchases_processed" do
+    it "does not raise when purchases is nil" do
+      order = create(:order)
+      service = Order::ChargeService.new(order:, params: { line_items: [] })
+      expect { service.send(:ensure_all_purchases_processed, nil) }.not_to raise_error
+    end
+
+    it "does not raise NoMethodError when an error occurs before non_free_seller_purchases is assigned" do
+      seller = create(:user)
+      product = create(:product, user: seller, price_cents: 10_00)
+      line_items = {
+        line_items: [
+          { uid: "uid-1", permalink: product.unique_permalink, perceived_price_cents: product.price_cents, quantity: 1 }
+        ]
+      }
+      params = line_items.merge(
+        email: "buyer@example.com",
+        cc_zipcode: "12345",
+        purchase: { full_name: "Test Buyer", street_address: "123 Test St", country: "US", state: "CA", city: "San Francisco", zip_code: "94117" },
+        browser_guid: SecureRandom.uuid,
+        ip_address: "0.0.0.0",
+        session_id: SecureRandom.hex,
+        is_mobile: false,
+      )
+
+      order, _ = Order::CreateService.new(params:).perform
+
+      allow(order.charges).to receive(:create!).and_raise(ActiveRecord::RecordInvalid)
+
+      expect { Order::ChargeService.new(order:, params:).perform }.not_to raise_error
+    end
+
+    it "falls back to seller_purchases for cleanup when non_free_seller_purchases is nil" do
+      seller = create(:user)
+      product = create(:product, user: seller, price_cents: 10_00)
+      line_items = {
+        line_items: [
+          { uid: "uid-1", permalink: product.unique_permalink, perceived_price_cents: product.price_cents, quantity: 1 }
+        ]
+      }
+      params = line_items.merge(
+        email: "buyer@example.com",
+        cc_zipcode: "12345",
+        purchase: { full_name: "Test Buyer", street_address: "123 Test St", country: "US", state: "CA", city: "San Francisco", zip_code: "94117" },
+        browser_guid: SecureRandom.uuid,
+        ip_address: "0.0.0.0",
+        session_id: SecureRandom.hex,
+        is_mobile: false,
+      )
+
+      order, _ = Order::CreateService.new(params:).perform
+      purchase = order.purchases.first
+
+      allow(order.charges).to receive(:create!).and_raise(ActiveRecord::RecordInvalid)
+
+      Order::ChargeService.new(order:, params:).perform
+      purchase.reload
+      expect(purchase).to be_failed
+    end
+
+    it "marks free purchases as successful in the fallback path when an exception occurs before non_free_seller_purchases is assigned" do
+      seller = create(:user)
+      free_product = create(:product, user: seller, price_cents: 0)
+      paid_product = create(:product, user: seller, price_cents: 10_00)
+      params = {
+        line_items: [
+          { uid: "uid-free", permalink: free_product.unique_permalink, perceived_price_cents: 0, quantity: 1 },
+          { uid: "uid-paid", permalink: paid_product.unique_permalink, perceived_price_cents: paid_product.price_cents, quantity: 1 }
+        ],
+        email: "buyer@example.com",
+        cc_zipcode: "12345",
+        purchase: { full_name: "Test Buyer", street_address: "123 Test St", country: "US", state: "CA", city: "San Francisco", zip_code: "94117" },
+        browser_guid: SecureRandom.uuid,
+        ip_address: "0.0.0.0",
+        session_id: SecureRandom.hex,
+        is_mobile: false,
+      }
+
+      order, _ = Order::CreateService.new(params:).perform
+      allow(order.charges).to receive(:create!).and_raise(ActiveRecord::RecordInvalid)
+
+      Order::ChargeService.new(order:, params:).perform
+
+      expect(order.purchases.find_by(link: free_product).reload).to be_successful
+      expect(order.purchases.find_by(link: paid_product).reload).to be_failed
+    end
+
+    it "does not schedule FailAbandonedPurchaseWorker due to stale charge_intent from a prior seller when an exception occurs" do
+      seller_a = create(:user)
+      seller_b = create(:user)
+      product_a = create(:product, user: seller_a, price_cents: 10_00)
+      product_b = create(:product, user: seller_b, price_cents: 20_00)
+      params = {
+        line_items: [
+          { uid: "uid-a", permalink: product_a.unique_permalink, perceived_price_cents: product_a.price_cents, quantity: 1 },
+          { uid: "uid-b", permalink: product_b.unique_permalink, perceived_price_cents: product_b.price_cents, quantity: 1 }
+        ],
+        email: "buyer@example.com",
+        cc_zipcode: "12345",
+        purchase: { full_name: "Test Buyer", street_address: "123 Test St", country: "US", state: "CA", city: "San Francisco", zip_code: "94117" },
+        browser_guid: SecureRandom.uuid,
+        ip_address: "0.0.0.0",
+        session_id: SecureRandom.hex,
+        is_mobile: false,
+      }
+
+      order, _ = Order::CreateService.new(params:).perform
+      purchase_b = order.purchases.find_by(link: product_b)
+
+      service = Order::ChargeService.new(order:, params:)
+      requires_action_intent = double("charge_intent", requires_action?: true, succeeded?: false, client_secret: "cs_test_xxx", id: "pi_test_xxx")
+
+      call_count = 0
+      allow(service).to receive(:create_charge_for_seller_purchases) do |purchases, *|
+        call_count += 1
+        if call_count == 1
+          service.charge_intent = requires_action_intent
+          purchases.each { |p| p.create_processor_payment_intent!(intent_id: requires_action_intent.id) }
+        else
+          raise StandardError, "Simulated failure for seller B"
+        end
+      end
+
+      service.perform
+
+      expect(purchase_b.reload).to be_failed
+      expect(FailAbandonedPurchaseWorker.jobs.select { |j| j["args"] == [purchase_b.id] }.size).to eq(0)
+    end
+
+    it "retries marking as successful when charge_intent succeeded but post-charge processing failed" do
+      seller = create(:user)
+      merchant_account = create(:merchant_account, user: nil)
+      product = create(:product, user: seller, price_cents: 10_00)
+      params = {
+        line_items: [
+          { uid: "uid-1", permalink: product.unique_permalink, perceived_price_cents: product.price_cents, quantity: 1 }
+        ],
+        email: "buyer@example.com",
+        cc_zipcode: "12345",
+        purchase: { full_name: "Test Buyer", street_address: "123 Test St", country: "US", state: "CA", city: "San Francisco", zip_code: "94117" },
+        browser_guid: SecureRandom.uuid,
+        ip_address: "0.0.0.0",
+        session_id: SecureRandom.hex,
+        is_mobile: false,
+      }
+
+      order, _ = Order::CreateService.new(params:).perform
+      purchase = order.purchases.first
+
+      service = Order::ChargeService.new(order:, params:)
+      chargeable = double("chargeable", fingerprint: "fingerprint")
+      succeeded_intent = double(
+        "charge_intent",
+        succeeded?: true,
+        requires_action?: false,
+        id: "pi_test_xxx",
+        charge: double("charge", id: "ch_test", fee: 30, fee_currency: "usd")
+      )
+
+      mark_call_count = 0
+      allow(Purchase::MarkSuccessfulService).to receive(:new).and_wrap_original do |method, purchase_to_mark|
+        instance = method.call(purchase_to_mark)
+        allow(instance).to receive(:perform) do
+          mark_call_count += 1
+          if mark_call_count == 1
+            raise ActiveRecord::LockWaitTimeout.new("Lock wait timeout exceeded")
+          end
+          purchase_to_mark.update_columns(purchase_state: "successful", succeeded_at: Time.current)
+        end
+        instance
+      end
+
+      allow(service).to receive(:create_chargeable_from_params).and_return([nil, nil, chargeable])
+      allow(service).to receive(:prepare_purchases_for_charge).and_return(chargeable)
+      allow(service).to receive(:create_charge_for_seller_purchases) do |purchases, chargeable, off_session, setup_future_charges|
+        service.charge_intent = succeeded_intent
+        purchases.each do |p|
+          p.errors.clear
+          next unless p.in_progress?
+          p.update!(
+            charge_processor_id: StripeChargeProcessor.charge_processor_id,
+            flow_of_funds: FlowOfFunds.build_simple_flow_of_funds(Currency::USD, p.total_transaction_cents),
+            merchant_account:,
+            stripe_fingerprint: chargeable.fingerprint,
+            stripe_transaction_id: succeeded_intent.charge.id
+          )
+          Purchase::MarkSuccessfulService.new(p).perform
+        end
+      end
+
+      service.perform
+      purchase.reload
+      expect(purchase).to be_successful
+      expect(mark_call_count).to eq(2)
+    end
+
+    it "marks successful without recreating balance transactions when charge data was already saved" do
+      seller = create(:user)
+      merchant_account = create(:merchant_account, user: nil)
+      product = create(:product, user: seller, price_cents: 10_00)
+      order = create(:order)
+      purchase = create(:purchase_in_progress, link: product, seller:, merchant_account:,
+                                               charge_processor_id: StripeChargeProcessor.charge_processor_id,
+                                               stripe_fingerprint: "fingerprint", stripe_transaction_id: "ch_test")
+      order.purchases << purchase
+      balance = create(:balance, user: seller, merchant_account:, amount_cents: 0, holding_amount_cents: 0)
+      balance_transaction = BalanceTransaction.new(
+        user: seller,
+        merchant_account:,
+        purchase:,
+        balance:,
+        issued_amount_currency: Currency::USD,
+        issued_amount_gross_cents: 10_00,
+        issued_amount_net_cents: 8_90,
+        holding_amount_currency: Currency::USD,
+        holding_amount_gross_cents: 10_00,
+        holding_amount_net_cents: 8_90
+      )
+      balance_transaction.save!
+      purchase.update!(purchase_success_balance: balance)
+      params = {
+        line_items: [
+          { uid: "uid-1", permalink: product.unique_permalink, perceived_price_cents: product.price_cents, quantity: 1 }
+        ],
+        email: "buyer@example.com",
+        browser_guid: SecureRandom.uuid,
+        ip_address: "0.0.0.0",
+        session_id: SecureRandom.hex,
+        is_mobile: false,
+      }
+      service = Order::ChargeService.new(order:, params:)
+      service.charge_intent = double("charge_intent", succeeded?: true, requires_action?: false)
+
+      balance_transaction_count = purchase.balance_transactions.count
+      expect { service.ensure_all_purchases_processed([purchase]) }.to change { ActivateIntegrationsWorker.jobs.size }.by(1)
+
+      expect(purchase.balance_transactions.count).to eq(balance_transaction_count)
+      expect(purchase.reload).to be_successful
+    end
+
+    it "applies an orphan seller balance transaction before marking successful" do
+      seller = create(:user)
+      merchant_account = create(:merchant_account, user: nil)
+      product = create(:product, user: seller, price_cents: 10_00)
+      order = create(:order)
+      purchase = create(:purchase_in_progress, link: product, seller:, merchant_account:,
+                                               charge_processor_id: StripeChargeProcessor.charge_processor_id,
+                                               stripe_fingerprint: "fingerprint", stripe_transaction_id: "ch_test")
+      order.purchases << purchase
+      balance_transaction = BalanceTransaction.new(
+        user: seller,
+        merchant_account:,
+        purchase:,
+        issued_amount_currency: Currency::USD,
+        issued_amount_gross_cents: 10_00,
+        issued_amount_net_cents: 8_90,
+        holding_amount_currency: Currency::USD,
+        holding_amount_gross_cents: 10_00,
+        holding_amount_net_cents: 8_90
+      )
+      balance_transaction.save!
+      params = {
+        line_items: [
+          { uid: "uid-1", permalink: product.unique_permalink, perceived_price_cents: product.price_cents, quantity: 1 }
+        ],
+        email: "buyer@example.com",
+        browser_guid: SecureRandom.uuid,
+        ip_address: "0.0.0.0",
+        session_id: SecureRandom.hex,
+        is_mobile: false,
+      }
+      service = Order::ChargeService.new(order:, params:)
+      service.charge_intent = double("charge_intent", succeeded?: true, requires_action?: false)
+
+      expect do
+        expect { service.ensure_all_purchases_processed([purchase]) }.to change { ActivateIntegrationsWorker.jobs.size }.by(1)
+      end.to change { seller.reload.unpaid_balance_cents }.by(8_90)
+
+      expect(balance_transaction.reload.balance_id).to be_present
+      expect(purchase.reload.purchase_success_balance_id).to eq(balance_transaction.balance_id)
+      expect(purchase).to be_successful
+    end
+
+    it "keeps lock timeouts while applying orphan seller balance transactions from escaping" do
+      seller = create(:user)
+      merchant_account = create(:merchant_account, user: nil)
+      product = create(:product, user: seller, price_cents: 10_00)
+      order = create(:order)
+      purchase = create(:purchase_in_progress, link: product, seller:, merchant_account:,
+                                               charge_processor_id: StripeChargeProcessor.charge_processor_id,
+                                               stripe_fingerprint: "fingerprint", stripe_transaction_id: "ch_test")
+      order.purchases << purchase
+      balance_transaction = BalanceTransaction.new(
+        user: seller,
+        merchant_account:,
+        purchase:,
+        issued_amount_currency: Currency::USD,
+        issued_amount_gross_cents: 10_00,
+        issued_amount_net_cents: 8_90,
+        holding_amount_currency: Currency::USD,
+        holding_amount_gross_cents: 10_00,
+        holding_amount_net_cents: 8_90
+      )
+      balance_transaction.save!
+      params = {
+        line_items: [
+          { uid: "uid-1", permalink: product.unique_permalink, perceived_price_cents: product.price_cents, quantity: 1 }
+        ],
+        email: "buyer@example.com",
+        browser_guid: SecureRandom.uuid,
+        ip_address: "0.0.0.0",
+        session_id: SecureRandom.hex,
+        is_mobile: false,
+      }
+      service = Order::ChargeService.new(order:, params:)
+      service.charge_intent = double("charge_intent", succeeded?: true, requires_action?: false)
+      allow_any_instance_of(BalanceTransaction).to receive(:update_balance!).and_raise(ActiveRecord::LockWaitTimeout.new("Lock wait timeout exceeded"))
+
+      expect { service.ensure_all_purchases_processed([purchase]) }.not_to raise_error
+
+      expect(service.charge_responses["uid-1"][:success]).to eq(false)
+      expect(purchase.reload).to be_in_progress
+    end
+
+    it "keeps record validation errors while applying orphan seller balance transactions from escaping" do
+      seller = create(:user)
+      merchant_account = create(:merchant_account, user: nil)
+      product = create(:product, user: seller, price_cents: 10_00)
+      order = create(:order)
+      purchase = create(:purchase_in_progress, link: product, seller:, merchant_account:,
+                                               charge_processor_id: StripeChargeProcessor.charge_processor_id,
+                                               stripe_fingerprint: "fingerprint", stripe_transaction_id: "ch_test")
+      order.purchases << purchase
+      balance_transaction = BalanceTransaction.new(
+        user: seller,
+        merchant_account:,
+        purchase:,
+        issued_amount_currency: Currency::USD,
+        issued_amount_gross_cents: 10_00,
+        issued_amount_net_cents: 8_90,
+        holding_amount_currency: Currency::USD,
+        holding_amount_gross_cents: 10_00,
+        holding_amount_net_cents: 8_90
+      )
+      balance_transaction.save!
+      params = {
+        line_items: [
+          { uid: "uid-1", permalink: product.unique_permalink, perceived_price_cents: product.price_cents, quantity: 1 }
+        ],
+        email: "buyer@example.com",
+        browser_guid: SecureRandom.uuid,
+        ip_address: "0.0.0.0",
+        session_id: SecureRandom.hex,
+        is_mobile: false,
+      }
+      service = Order::ChargeService.new(order:, params:)
+      service.charge_intent = double("charge_intent", succeeded?: true, requires_action?: false)
+      allow_any_instance_of(BalanceTransaction).to receive(:update_balance!).and_raise(ActiveRecord::RecordInvalid.new(Balance.new))
+
+      expect { service.ensure_all_purchases_processed([purchase]) }.not_to raise_error
+
+      expect(service.charge_responses["uid-1"][:success]).to eq(false)
+      expect(purchase.reload).to be_in_progress
+    end
+
+    it "keeps recommended purchase failures from turning successful charged retries into errors" do
+      seller = create(:user)
+      merchant_account = create(:merchant_account, user: nil)
+      product = create(:product, user: seller, price_cents: 10_00)
+      order = create(:order)
+      purchase = create(:purchase_in_progress, link: product, seller:, merchant_account:,
+                                               charge_processor_id: StripeChargeProcessor.charge_processor_id,
+                                               stripe_fingerprint: "fingerprint", stripe_transaction_id: "ch_test",
+                                               was_product_recommended: true)
+      order.purchases << purchase
+      balance = create(:balance, user: seller, merchant_account:, amount_cents: 0, holding_amount_cents: 0)
+      balance_transaction = BalanceTransaction.new(
+        user: seller,
+        merchant_account:,
+        purchase:,
+        balance:,
+        issued_amount_currency: Currency::USD,
+        issued_amount_gross_cents: 10_00,
+        issued_amount_net_cents: 8_90,
+        holding_amount_currency: Currency::USD,
+        holding_amount_gross_cents: 10_00,
+        holding_amount_net_cents: 8_90
+      )
+      balance_transaction.save!
+      purchase.update!(purchase_success_balance: balance)
+      params = {
+        line_items: [
+          { uid: "uid-1", permalink: product.unique_permalink, perceived_price_cents: product.price_cents, quantity: 1 }
+        ],
+        email: "buyer@example.com",
+        browser_guid: SecureRandom.uuid,
+        ip_address: "0.0.0.0",
+        session_id: SecureRandom.hex,
+        is_mobile: false,
+      }
+      service = Order::ChargeService.new(order:, params:)
+      service.charge_intent = double("charge_intent", succeeded?: true, requires_action?: false)
+      allow(purchase).to receive(:handle_recommended_purchase).and_raise(ActiveRecord::StatementInvalid.new("RecommendedPurchaseInfo failed"))
+
+      expect { service.ensure_all_purchases_processed([purchase]) }.not_to raise_error
+
+      expect(purchase.errors).to be_empty
+      expect(purchase.reload).to be_successful
+      expect(service.charge_responses["uid-1"][:success]).to eq(true)
+    end
+
+    it "keeps post-success finalization failures from turning successful charged retries into errors" do
+      seller = create(:user)
+      merchant_account = create(:merchant_account, user: nil)
+      product = create(:product, user: seller, price_cents: 10_00)
+      order = create(:order)
+      purchase = create(:purchase_in_progress, link: product, seller:, merchant_account:,
+                                               charge_processor_id: StripeChargeProcessor.charge_processor_id,
+                                               stripe_fingerprint: "fingerprint", stripe_transaction_id: "ch_test")
+      order.purchases << purchase
+      balance = create(:balance, user: seller, merchant_account:, amount_cents: 0, holding_amount_cents: 0)
+      balance_transaction = BalanceTransaction.new(
+        user: seller,
+        merchant_account:,
+        purchase:,
+        balance:,
+        issued_amount_currency: Currency::USD,
+        issued_amount_gross_cents: 10_00,
+        issued_amount_net_cents: 8_90,
+        holding_amount_currency: Currency::USD,
+        holding_amount_gross_cents: 10_00,
+        holding_amount_net_cents: 8_90
+      )
+      balance_transaction.save!
+      purchase.update!(purchase_success_balance: balance)
+      params = {
+        line_items: [
+          { uid: "uid-1", permalink: product.unique_permalink, perceived_price_cents: product.price_cents, quantity: 1 }
+        ],
+        email: "buyer@example.com",
+        browser_guid: SecureRandom.uuid,
+        ip_address: "0.0.0.0",
+        session_id: SecureRandom.hex,
+        is_mobile: false,
+      }
+      service = Order::ChargeService.new(order:, params:)
+      service.charge_intent = double("charge_intent", succeeded?: true, requires_action?: false)
+      allow_any_instance_of(User).to receive(:save_gumroad_day_timezone).and_raise(ActiveRecord::RecordInvalid.new(seller))
+
+      expect { service.ensure_all_purchases_processed([purchase]) }.not_to raise_error
+
+      expect(purchase.errors).to be_empty
+      expect(purchase.reload).to be_successful
+      expect(service.charge_responses["uid-1"][:success]).to eq(true)
+    end
+
+    it "creates affiliate credit from an applied affiliate balance transaction without duplicating it" do
+      seller = create(:user)
+      merchant_account = create(:merchant_account, user: nil)
+      product = create(:product, user: seller, price_cents: 10_00)
+      affiliate_user = create(:affiliate_user)
+      affiliate = create(:direct_affiliate, affiliate_user:, seller:, affiliate_basis_points: 1000)
+      order = create(:order)
+      purchase = create(:purchase_in_progress, link: product, seller:, merchant_account:, affiliate:,
+                                               charge_processor_id: StripeChargeProcessor.charge_processor_id,
+                                               stripe_fingerprint: "fingerprint", stripe_transaction_id: "ch_test",
+                                               affiliate_credit_cents: 1_00)
+      order.purchases << purchase
+      affiliate_balance = create(:balance, user: affiliate_user, merchant_account: purchase.affiliate_merchant_account, amount_cents: 1_00, holding_amount_cents: 1_00)
+      affiliate_balance_transaction = BalanceTransaction.new(
+        user: affiliate_user,
+        merchant_account: purchase.affiliate_merchant_account,
+        purchase:,
+        balance: affiliate_balance,
+        issued_amount_currency: Currency::USD,
+        issued_amount_gross_cents: 1_00,
+        issued_amount_net_cents: 1_00,
+        holding_amount_currency: Currency::USD,
+        holding_amount_gross_cents: 1_00,
+        holding_amount_net_cents: 1_00
+      )
+      affiliate_balance_transaction.save!
+      params = {
+        line_items: [
+          { uid: "uid-1", permalink: product.unique_permalink, perceived_price_cents: product.price_cents, quantity: 1 }
+        ],
+        email: "buyer@example.com",
+        browser_guid: SecureRandom.uuid,
+        ip_address: "0.0.0.0",
+        session_id: SecureRandom.hex,
+        is_mobile: false,
+      }
+      service = Order::ChargeService.new(order:, params:)
+      service.charge_intent = double("charge_intent", succeeded?: true, requires_action?: false)
+
+      expect { service.ensure_all_purchases_processed([purchase]) }.not_to change { purchase.balance_transactions.where(user: affiliate_user).count }
+
+      expect(purchase.reload).to be_successful
+      expect(purchase.affiliate_credit).to be_present
+      expect(purchase.affiliate_credit.affiliate_credit_success_balance).to eq(affiliate_balance)
+    end
+
+    it "does not retry marking as successful for errored purchases without charge data" do
+      seller = create(:user)
+      product = create(:product, user: seller, price_cents: 10_00)
+      order = create(:order)
+      purchase = create(:purchase_in_progress, link: product, seller:, merchant_account: nil, charge_processor_id: nil,
+                                               stripe_fingerprint: nil, stripe_transaction_id: nil)
+      order.purchases << purchase
+      params = {
+        line_items: [
+          { uid: "uid-1", permalink: product.unique_permalink, perceived_price_cents: product.price_cents, quantity: 1 }
+        ],
+        email: "buyer@example.com",
+        browser_guid: SecureRandom.uuid,
+        ip_address: "0.0.0.0",
+        session_id: SecureRandom.hex,
+        is_mobile: false,
+      }
+      service = Order::ChargeService.new(order:, params:)
+      service.charge_intent = double("charge_intent", succeeded?: true, requires_action?: false)
+      purchase.errors.add(:base, "The purchase was not charged")
+
+      expect(Purchase::MarkSuccessfulService).not_to receive(:new).with(purchase)
+
+      service.ensure_all_purchases_processed([purchase])
+
+      expect(purchase).to be_failed
+    end
+  end
+
   describe "#mandate_options_for_stripe" do
     let!(:seller) { create(:user) }
     let!(:membership_product) { create(:membership_product_with_preset_tiered_pricing, user: seller) }
@@ -775,6 +1302,44 @@ describe Order::ChargeService, :vcr do
       expect(mandate_options[:payment_method_options][:card][:mandate_options][:interval_count]).to be nil
       expect(mandate_options[:payment_method_options][:card][:mandate_options][:amount]).to eq(10_00)
       expect(mandate_options[:payment_method_options][:card][:mandate_options][:amount_type]).to eq("maximum")
+    end
+  end
+
+  describe "#perform rejecting a cart that overruns an offer code limit" do
+    it "fails the offending line items, skips Stripe, and returns an error response per line item" do
+      seller = create(:user)
+      product = create(:product, user: seller, price_cents: 1_000)
+      category = create(:variant_category, title: "Tier", link: product)
+      variant_a = create(:variant, name: "A", variant_category: category)
+      variant_b = create(:variant, name: "B", variant_category: category)
+      offer_code = create(:offer_code, products: [product], code: "once", amount_cents: 100, max_purchase_count: 1)
+
+      order = create(:order)
+      [variant_a, variant_b].each do |variant|
+        purchase = build(:purchase_in_progress, link: product, seller:, offer_code:, quantity: 1)
+        purchase.variant_attributes << variant
+        purchase.save(validate: false)
+        order.purchases << purchase
+      end
+
+      params = {
+        line_items: [
+          { uid: "uid-a", permalink: product.unique_permalink, variants: [variant_a.external_id] },
+          { uid: "uid-b", permalink: product.unique_permalink, variants: [variant_b.external_id] },
+        ]
+      }
+
+      expect(Stripe::PaymentIntent).not_to receive(:create)
+
+      charge_responses = Order::ChargeService.new(order:, params:).perform
+
+      expect(order.purchases.reload.map(&:purchase_state).uniq).to eq(["failed"])
+      expect(charge_responses.keys).to contain_exactly("uid-a", "uid-b")
+      charge_responses.each_value do |response|
+        expect(response[:success]).to eq(false)
+        expect(response[:error_message]).to match(/quantity you have selected/)
+        expect(response[:error_code]).to eq(PurchaseErrorCode::EXCEEDING_OFFER_CODE_QUANTITY)
+      end
     end
   end
 end

@@ -35,6 +35,7 @@ class ProductDuplicatorService
       duplicated_product.is_collab = false
       mark_duplicate_product_as_draft
       duplicated_product.is_duplicating = false
+      enforce_one_coffee_per_user!
       duplicated_product.save!(validate: false) # Skip validations since the duplicated product may have invalid state (e.g. missing required fields) that will be fixed by subsequent duplication steps
 
       duplicate_prices
@@ -88,6 +89,15 @@ class ProductDuplicatorService
     def mark_duplicate_product_as_draft
       duplicated_product.draft = true
       duplicated_product.purchase_disabled_at = Time.current
+    end
+
+    def enforce_one_coffee_per_user!
+      return unless duplicated_product.native_type == Link::NATIVE_TYPE_COFFEE
+      return if duplicated_product.archived? || duplicated_product.deleted_at.present?
+      return unless product.user.links.visible_and_not_archived.where(native_type: Link::NATIVE_TYPE_COFFEE).exists?
+
+      duplicated_product.errors.add(:base, "You can only have one coffee product.")
+      raise ActiveRecord::RecordInvalid.new(duplicated_product)
     end
 
     def duplicate_prices
@@ -236,6 +246,9 @@ class ProductDuplicatorService
         variant_category.variants.each do |variant|
           new_variant = variant.dup
           new_variant.variant_category = new_variant_category
+          new_variant.apply_price_changes_to_existing_memberships = false
+          new_variant.subscription_price_change_effective_date = nil
+          new_variant.subscription_price_change_message = nil
           duplicate_variant_product_files(original_variant: variant, duplicate_variant: new_variant)
           variant.skus.each do |sku|
             new_sku = duplicated_product.skus.where(name: sku.name).first
@@ -252,6 +265,9 @@ class ProductDuplicatorService
       product.skus.each do |sku|
         new_sku = sku.dup
         new_sku.link = duplicated_product
+        new_sku.apply_price_changes_to_existing_memberships = false
+        new_sku.subscription_price_change_effective_date = nil
+        new_sku.subscription_price_change_message = nil
         duplicate_variant_product_files(original_variant: sku, duplicate_variant: new_sku)
         new_sku.save!
       end

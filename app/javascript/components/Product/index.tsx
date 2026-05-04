@@ -57,6 +57,7 @@ import { DiscountExpirationCountdown } from "$app/components/Product/DiscountExp
 import { PriceTag } from "$app/components/Product/PriceTag";
 import { Ribbon } from "$app/components/Product/Ribbon";
 import { ShareSection } from "$app/components/Product/ShareSection";
+import { SubscriptionChoiceModal } from "$app/components/Product/SubscriptionChoiceModal";
 import { Thumbnail } from "$app/components/Product/Thumbnail";
 import { PublicFilesSettingsContext } from "$app/components/ProductEdit/ProductTab/DescriptionEditor";
 import { InstallmentPlan } from "$app/components/ProductEdit/state";
@@ -257,6 +258,8 @@ export const Product = ({
   disableAnalytics?: boolean;
 }) => {
   const [pageLoaded, setPageLoaded] = React.useState(false);
+  const [checkoutUrlForModal, setCheckoutUrlForModal] = React.useState<string | null>(null);
+  const loggedInUser = useLoggedInUser();
   const descriptionEditor = useRichTextEditor({
     // delay initialization to avoid errors in SSR
     initialValue: pageLoaded ? product.description_html : null,
@@ -580,7 +583,19 @@ export const Product = ({
             label={ctaLabel}
             showInstallmentPlanNotes
             onClick={(e) => {
-              if (!validate()) e.preventDefault();
+              if (!validate()) {
+                e.preventDefault();
+                return;
+              }
+              if (
+                loggedInUser &&
+                purchase &&
+                (purchase.membership || purchase.subscription_has_lapsed) &&
+                product.is_recurring_billing
+              ) {
+                e.preventDefault();
+                setCheckoutUrlForModal(e.currentTarget.href);
+              }
             }}
           />
           {product.sales_count !== null ? (
@@ -628,6 +643,13 @@ export const Product = ({
         </section>
         {product.ratings ? <Reviews ratings={product.ratings} productId={product.id} seller={product.seller} /> : null}
       </section>
+      {purchase && (purchase.membership || purchase.subscription_has_lapsed) && product.is_recurring_billing ? (
+        <SubscriptionChoiceModal
+          purchase={purchase}
+          checkoutUrl={checkoutUrlForModal ?? ""}
+          onClose={() => setCheckoutUrlForModal(null)}
+        />
+      ) : null}
     </article>
   );
 };
@@ -737,7 +759,11 @@ export const RatingsHistogramRow = ({ rating, percentage }: { rating: number; pe
   return (
     <>
       <div>{label}</div>
-      <meter aria-label={label} value={percentage / 100} />
+      <meter
+        aria-label={label}
+        value={percentage / 100}
+        className="h-[1lh] w-full appearance-none rounded border border-border bg-none [&::-moz-meter-bar]:rounded [&::-moz-meter-bar]:[background:var(--color-accent)] [&::-webkit-meter-bar]:contents [&::-webkit-meter-inner-element]:contents [&::-webkit-meter-optimum-value]:rounded [&::-webkit-meter-optimum-value]:[background:var(--color-accent)]"
+      />
       <div>{formattedPercentage}</div>
     </>
   );
@@ -784,7 +810,7 @@ const Reviews = ({
           {`${formatOrderOfMagnitude(ratings.count, 1)} ${ratings.count === 1 ? "rating" : "ratings"}`})
         </div>
       </header>
-      <div itemProp="aggregateRating" itemType="https://schema.org/AggregateRating" itemScope hidden>
+      <div itemProp="aggregateRating" itemType="https://schema.org/AggregateRating" itemScope className="hidden">
         <div itemProp="reviewCount">{ratings.count}</div>
         <div itemProp="ratingValue">{ratings.average}</div>
       </div>

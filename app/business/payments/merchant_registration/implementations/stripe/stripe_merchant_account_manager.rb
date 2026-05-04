@@ -10,6 +10,15 @@ module StripeMerchantAccountManager
                                            "Malta", "Netherlands", "New Zealand", "Norway", "Poland", "Portugal",
                                            "Romania", "Singapore", "Slovakia", "Slovenia", "Spain", "Sweden", "Switzerland",
                                            "United Arab Emirates", "United Kingdom", "United States"].map { |country_name| Compliance::Countries.find_by_name(country_name).alpha2 }
+  ACCOUNT_HOLDER_NAME_SYNC_COUNTRIES = [Compliance::Countries::JPN.alpha2, Compliance::Countries::VNM.alpha2, Compliance::Countries::IDN.alpha2].freeze
+  private_constant :ACCOUNT_HOLDER_NAME_SYNC_COUNTRIES
+
+  NEW_ACCOUNT_CREATION_BLOCKED_COUNTRIES = [Compliance::Countries::IND.alpha2].freeze
+
+  def self.account_holder_name_synced_to_stripe?(user)
+    country_code = user.alive_user_compliance_info&.legal_entity_country_code
+    ACCOUNT_HOLDER_NAME_SYNC_COUNTRIES.include?(country_code)
+  end
 
   # Use "CEO" as the default title for all Stripe custom connect account owners for now.
   DEFAULT_RELATIONSHIP_TITLE = "CEO"
@@ -39,6 +48,7 @@ module StripeMerchantAccountManager
 
       country_code = user_compliance_info.legal_entity_country_code
       raise MerchantRegistrationUserNotReadyError.new(user.id, "does not have a legal entity country") if country_code.blank?
+      raise MerchantRegistrationUserNotReadyError.new(user.id, "is not supported yet") if NEW_ACCOUNT_CREATION_BLOCKED_COUNTRIES.include?(country_code)
       country = Country.new(country_code)
 
       currency = country.payout_currency
@@ -101,13 +111,13 @@ module StripeMerchantAccountManager
       DefaultAbandonedCartWorkflowGeneratorService.new(seller: user).generate if merchant_account.is_a_stripe_connect_account?
     rescue => e
       Rails.logger.error("Failed to generate default abandoned cart workflow for user #{user.id}: #{e.message}")
-      Bugsnag.notify(e)
+      ErrorNotifier.notify(e)
     end
 
     merchant_account
   rescue Stripe::StripeError => e
     cleanup_failed_merchant_account(merchant_account) if merchant_account.present?
-    Bugsnag.notify(e)
+    ErrorNotifier.notify(e)
     raise
   end
 
@@ -253,21 +263,49 @@ module StripeMerchantAccountManager
     raise MerchantRegistrationUserNotReadyError.new(user.id, "does not have a bank account") if bank_account.nil?
 
     stripe_account = Stripe::Account.retrieve(user.stripe_account.charge_processor_merchant_id)
-    return if stripe_account["metadata"]["bank_account_id"] == bank_account.external_id
+    if stripe_account["metadata"]["bank_account_id"] == bank_account.external_id
+      return :noop_metadata_match unless account_holder_name_synced_to_stripe?(bank_account.user)
+
+      stripe_external_account = stripe_account["external_accounts"]&.first
+      stripe_holder_name = stripe_external_account && stripe_external_account["account_holder_name"]
+      return :noop_metadata_match if stripe_holder_name == bank_account.account_holder_full_name
+    end
 
     attributes = bank_account_hash(bank_account, stripe_account:, passphrase:)
     Stripe::Account.update(stripe_account.id, attributes)
 
     save_stripe_bank_account_info(bank_account, stripe_account.refresh)
+    :synced
   rescue Stripe::InvalidRequestError => e
-    return ContactingCreatorMailer.invalid_bank_account(user.id).deliver_later(queue: "critical") if e.message["Invalid account number"] ||
-                                                                            e.message["couldn't find that transit"] || e.message["previous attempts to deliver payouts"]
+    record_bank_sync_failure_note(user, e)
+    if e.code == "incorrect_account_holder_name"
+      ContactingCreatorMailer.invalid_account_holder_name(user.id).deliver_later(queue: "critical")
+      return :invalid_account_holder_name
+    end
+    if e.message["Invalid account number"] || e.message["couldn't find that transit"] || e.message["previous attempts to deliver payouts"]
+      ContactingCreatorMailer.invalid_bank_account(user.id).deliver_later(queue: "critical")
+      return :invalid_bank_account
+    end
 
-    Bugsnag.notify(e)
+    ErrorNotifier.notify(e)
+    :stripe_invalid_request
   rescue Stripe::CardError => e
-    Rails.logger.error "Stripe::CardError request ID #{e.request_id} when updating bank account #{bank_account.id} for stripe account #{stripe_account.inspect}"
+    record_bank_sync_failure_note(user, e)
+    ContactingCreatorMailer.invalid_bank_account(user.id).deliver_later(queue: "critical")
+    :card_not_supported
+  rescue Stripe::StripeError => e
+    Rails.logger.error "Stripe error (#{e.class.name}) request ID #{e.request_id} when updating bank account #{bank_account&.id} for stripe account #{stripe_account&.inspect}"
+    ErrorNotifier.notify(e)
+    :stripe_unknown_error
+  end
 
-    raise e
+  private_class_method
+  def self.record_bank_sync_failure_note(user, error)
+    code = error.respond_to?(:code) ? error.code : nil
+    user.add_payout_note(content: "Stripe bank sync failed: #{code || 'unknown'} — #{error.message.to_s.truncate(200)}")
+  rescue => e
+    Rails.logger.error "Failed to record payout-note breadcrumb for user #{user&.id}: #{e.class}: #{e.message}"
+    ErrorNotifier.notify(e)
   end
 
   def self.disconnect(user:)
@@ -297,7 +335,7 @@ module StripeMerchantAccountManager
     bank_account.stripe_connect_account_id = stripe_account.id
     bank_account.stripe_external_account_id = stripe_external_account.id
     bank_account.stripe_fingerprint = stripe_external_account.fingerprint
-    bank_account.save!
+    bank_account.save!(validate: false)
 
     CheckPaymentAddressWorker.perform_async(bank_account.user_id)
   end
@@ -316,7 +354,7 @@ module StripeMerchantAccountManager
       begin
         Stripe::Account.delete(merchant_account.charge_processor_merchant_id)
       rescue Stripe::StripeError => cleanup_error
-        Bugsnag.notify(cleanup_error)
+        ErrorNotifier.notify(cleanup_error)
       end
     end
     merchant_account.mark_deleted!
@@ -400,10 +438,16 @@ module StripeMerchantAccountManager
       if bank_account.is_a?(CardBankAccount)
         Stripe::Token.create({ customer: bank_account.credit_card.stripe_customer_id }, { stripe_account: stripe_account["id"] }).id
       else
+        account_number_for_stripe =
+          if bank_account.respond_to?(:stripe_account_number)
+            bank_account.stripe_account_number(passphrase)
+          else
+            bank_account.account_number.decrypt(passphrase).gsub(/[ -]/, "")
+          end
         bank_account_hash = {
           country: bank_account.country,
           currency: bank_account.currency,
-          account_number: bank_account.account_number.decrypt(passphrase).gsub(/[ -]/, "")
+          account_number: account_number_for_stripe
         }
         if bank_account.routing_number.present?
           routing_number = bank_account.routing_number
@@ -411,7 +455,7 @@ module StripeMerchantAccountManager
           bank_account_hash[:routing_number] = routing_number
         end
         bank_account_hash[:account_type] = bank_account.account_type if [Compliance::Countries::CHL.alpha2, Compliance::Countries::COL.alpha2].include?(country_code) && bank_account.account_type.present?
-        bank_account_hash[:account_holder_name] = bank_account.account_holder_full_name if [Compliance::Countries::JPN.alpha2, Compliance::Countries::VNM.alpha2, Compliance::Countries::IDN.alpha2].include?(country_code)
+        bank_account_hash[:account_holder_name] = bank_account.account_holder_full_name if account_holder_name_synced_to_stripe?(bank_account.user)
         bank_account_hash
       end
 
@@ -758,15 +802,20 @@ module StripeMerchantAccountManager
     is_charges_disabled = !stripe_account["charges_enabled"]
     charges_newly_disabled = stripe_account["charges_enabled"] == false && stripe_previous_attributes["charges_enabled"] == true
 
-    if user.active_bank_account.is_a?(CardBankAccount)
-      card_account_needs_syncing = user.active_bank_account.stripe_connect_account_id.blank?
+    active_bank_account = user.active_bank_account
+    if active_bank_account.is_a?(CardBankAccount)
+      card_account_needs_syncing = active_bank_account.stripe_connect_account_id.blank?
 
       if is_charges_disabled
         # Ignore request for card bank account until charges become enabled
         fields_needed.delete_if { |field_needed| field_needed[0] == UserComplianceInfoFields::BANK_ACCOUNT }
       elsif card_account_needs_syncing
-        update_bank_account(user, passphrase: GlobalConfig.get("STRONGBOX_GENERAL_PASSWORD"))
-        if user.active_bank_account.stripe_connect_account_id.present?
+        result = update_bank_account(user, passphrase: GlobalConfig.get("STRONGBOX_GENERAL_PASSWORD"))
+        active_bank_account = user.active_bank_account
+        if result == :stripe_unknown_error && active_bank_account
+          HandleNewBankAccountWorker.perform_in(5.seconds, active_bank_account.id)
+        end
+        if active_bank_account&.stripe_connect_account_id.present?
           fields_needed.delete_if { |field_needed| field_needed[0] == UserComplianceInfoFields::BANK_ACCOUNT }
         end
       end

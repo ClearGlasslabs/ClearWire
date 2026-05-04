@@ -45,10 +45,17 @@ describe CheckoutController, type: :controller, inertia: true do
       expect(meta_by_property).to include(
         "gr:google_analytics:enabled" => "true",
         "gr:fb_pixel:enabled" => "true",
+        "gr:tiktok_pixel:enabled" => "true",
         "gr:logged_in_user:id" => "",
         "gr:page:type" => "",
         "gr:facebook_sdk:enabled" => "true"
       )
+    end
+
+    it "does not raise when checkout params contain nested values" do
+      get :show, params: { product: { foo: "bar" }, username: { baz: "qux" }, wishlist: { id: "1" } }
+
+      expect(response).to be_successful
     end
 
     describe "process_cart_id_param check" do
@@ -223,6 +230,16 @@ describe CheckoutController, type: :controller, inertia: true do
         expect(response).to be_successful
         expect(inertia.component).to eq("Checkout/Show")
         expect(inertia.props.deep_symbolize_keys[:recommended_products]).to eq([product_cards.first])
+      end
+
+      it "returns empty array when recommendations time out" do
+        allow(RecommendedProducts::CheckoutService).to receive(:fetch_for_cart).and_raise(Timeout::Error)
+
+        get :show, params: { cart_product_ids: [cart_product.external_id], on_discover_page: "false", limit: "5" }, session: { recommender_model_name: }
+
+        expect(response).to be_successful
+        expect(inertia.component).to eq("Checkout/Show")
+        expect(inertia.props.deep_symbolize_keys[:recommended_products]).to eq([])
       end
     end
   end
@@ -472,6 +489,57 @@ describe CheckoutController, type: :controller, inertia: true do
         expect(response).to have_http_status(:found)
         expect(response).to redirect_to(checkout_path)
         expect(flash[:alert]).to eq("You cannot add more than 50 products to the cart.")
+      end
+
+      it "creates an empty cart when the `items` key is missing from params" do
+        expect do
+          patch :update, params: { cart: { discountCodes: [] } }, as: :json
+        end.to change(Cart, :count).by(1)
+
+        expect(response).to have_http_status(:see_other)
+        expect(response).to redirect_to(checkout_path)
+      end
+
+      it "creates a cart when the `discountCodes` key is missing from params" do
+        expect do
+          patch :update, params: { cart: { items: [] } }, as: :json
+        end.to change(Cart, :count).by(1)
+
+        expect(response).to have_http_status(:see_other)
+        expect(response).to redirect_to(checkout_path)
+        expect(Cart.last.discount_codes).to eq([])
+      end
+
+      it "acquires a row lock on the cart to prevent deadlocks" do
+        cart = create(:cart, user: seller)
+
+        expect_any_instance_of(Cart).to receive(:lock!).and_call_original
+
+        patch :update, params: { cart: { items: [], discountCodes: [] } }, as: :json
+
+        expect(response).to have_http_status(:see_other)
+      end
+
+      it "rescues ActiveRecord::Deadlocked and redirects with an error" do
+        allow_any_instance_of(Cart).to receive(:lock!).and_raise(
+          ActiveRecord::Deadlocked.new("Deadlock found when trying to get lock")
+        )
+
+        patch :update, params: { cart: { items: [], discountCodes: [] } }, as: :json
+
+        expect(response).to have_http_status(:found)
+        expect(response).to redirect_to(checkout_path)
+        expect(flash[:alert]).to eq("Sorry, something went wrong. Please try again.")
+      end
+
+      it "returns an error when the `cart` param is not a Hash" do
+        expect do
+          patch :update, params: { cart: "foo" }, as: :json
+        end.not_to change(Cart, :count)
+
+        expect(response).to have_http_status(:found)
+        expect(response).to redirect_to(checkout_path)
+        expect(flash[:alert]).to eq("Sorry, something went wrong. Please try again.")
       end
     end
 

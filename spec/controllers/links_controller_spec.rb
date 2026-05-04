@@ -115,13 +115,39 @@ describe LinksController, :vcr, inertia: true do
         end
       end
 
+      context "when a temp file is missing during publish" do
+        before do
+          allow_any_instance_of(Link).to receive(:publish!).and_raise(Errno::ENOENT, "No such file or directory @ rb_file_s_size - /tmp/image_processing_test.png")
+        end
+
+        it "notifies error tracker" do
+          expect(ErrorNotifier).to receive(:notify).once
+
+          post :publish, params: { id: @disabled_link.unique_permalink }
+        end
+
+        it "returns a retry-friendly error message" do
+          post :publish, params: { id: @disabled_link.unique_permalink }
+
+          expect(response.parsed_body["success"]).to eq(false)
+          expect(response.parsed_body["error_message"]).to eq("There was a temporary issue processing your product images. Please try again.")
+        end
+
+        it "does not publish the link" do
+          post :publish, params: { id: @disabled_link.unique_permalink }
+
+          expect(response.parsed_body["success"]).to eq(false)
+          expect(@disabled_link.reload.purchase_disabled_at).to be_present
+        end
+      end
+
       context "when an unknown exception is raised" do
         before do
           allow_any_instance_of(Link).to receive(:publish!).and_raise("error")
         end
 
-        it "sends a Bugsnag notification" do
-          expect(Bugsnag).to receive(:notify).once
+        it "notifies error tracker" do
+          expect(ErrorNotifier).to receive(:notify).once
 
           post :publish, params: { id: @disabled_link.unique_permalink }
         end
@@ -161,6 +187,19 @@ describe LinksController, :vcr, inertia: true do
         let(:request_params) { { id: product.unique_permalink } }
       end
 
+      it "succeeds when the product has an expired default offer code" do
+        offer_code = create(:offer_code, user: seller, products: [product])
+        product.update_column(:default_offer_code_id, offer_code.id)
+        offer_code.update_column(:expires_at, 1.day.ago)
+
+        sections = create_list(:seller_profile_products_section, 2, seller:, product:)
+
+        put :update_sections, params: { id: product.unique_permalink, sections: sections.map(&:external_id), main_section_index: 0 }
+
+        expect(response).to have_http_status(:no_content)
+        expect(product.reload.sections).to eq(sections.map(&:id))
+      end
+
       it "updates the SellerProfileSections attached to the product and cleans up orphaned sections" do
         sections = create_list(:seller_profile_products_section, 2, seller:, product:)
         create(:seller_profile_posts_section, seller:, product:)
@@ -198,6 +237,17 @@ describe LinksController, :vcr, inertia: true do
           expect(@product.reload.deleted_at.present?).to be(true)
         end
       end
+
+      it "allows deletion when default_offer_code is no longer associated with the product" do
+        product = create(:product, user: seller)
+        offer_code = create(:offer_code, user: seller, products: [product])
+        product.update!(default_offer_code: offer_code)
+        offer_code.products = []
+
+        delete :destroy, params: { id: product.unique_permalink }
+
+        expect(product.reload.deleted_at).to be_present
+      end
     end
 
     describe "GET edit" do
@@ -208,13 +258,13 @@ describe LinksController, :vcr, inertia: true do
         let(:request_params) { { id: product.unique_permalink } }
       end
 
-      it "assigns the correct instance variables" do
+      it "renders the Inertia product edit page" do
         get :edit, params: { id: product.unique_permalink }
         expect(response).to be_successful
-
-        product_presenter = assigns(:presenter)
-        expect(product_presenter.product).to eq(product)
-        expect(product_presenter.pundit_user).to eq(controller.pundit_user)
+        expect(inertia).to render_component("Products/Edit")
+        expect(inertia.props[:id]).to eq(product.external_id)
+        expect(inertia.props[:unique_permalink]).to eq(product.unique_permalink)
+        expect(inertia.props[:dropbox_api_key]).to eq(DROPBOX_PICKER_API_KEY)
       end
 
       context "with other user not owning the product" do
@@ -252,64 +302,10 @@ describe LinksController, :vcr, inertia: true do
           expect(response).to redirect_to(edit_bundle_product_path(bundle.external_id))
         end
       end
-    end
-
-    describe "GET edit_new" do
-      let(:product) { create(:product, user: seller) }
-
-      it_behaves_like "authorize called for action", :get, :edit_new do
-        let(:record) { product }
-        let(:request_params) { { id: product.unique_permalink } }
-      end
-
-      it "renders the Inertia product edit page" do
-        get :edit_new, params: { id: product.unique_permalink }
-        expect(response).to be_successful
-        expect(inertia).to render_component("Products/Edit")
-        expect(inertia.props[:id]).to eq(product.external_id)
-        expect(inertia.props[:unique_permalink]).to eq(product.unique_permalink)
-        expect(inertia.props[:dropbox_api_key]).to eq(DROPBOX_PICKER_API_KEY)
-      end
-
-      context "with other user not owning the product" do
-        let(:other_user) { create(:user) }
-
-        before do
-          sign_in other_user
-        end
-
-        it "redirects to product page" do
-          get :edit_new, params: { id: product.unique_permalink }
-          expect(response).to redirect_to(short_link_path(product))
-        end
-      end
-
-      context "with admin user signed in" do
-        let(:admin) { create(:admin_user) }
-
-        before do
-          sign_in admin
-        end
-
-        it "renders the page" do
-          get :edit_new, params: { id: product.unique_permalink }
-          expect(response).to have_http_status(:ok)
-        end
-      end
-
-      context "when the product is a bundle" do
-        let(:bundle) { create(:product, :bundle) }
-
-        it "redirects to the bundle edit page" do
-          sign_in bundle.user
-          get :edit_new, params: { id: bundle.unique_permalink }
-          expect(response).to redirect_to(edit_bundle_product_path(bundle.external_id))
-        end
-      end
 
       context "with wildcard sub-path" do
         it "renders the Inertia page for sub-routes" do
-          get :edit_new, params: { id: product.unique_permalink, other: "content" }
+          get :edit, params: { id: product.unique_permalink, other: "content" }
           expect(response).to be_successful
           expect(inertia).to render_component("Products/Edit")
         end
@@ -364,6 +360,17 @@ describe LinksController, :vcr, inertia: true do
         let(:product) { @product }
         let(:request_params) { @params }
         let(:response_status) { 204 }
+      end
+
+      it "returns the existing validation error when suggested price is set but the default price record is missing" do
+        @product.prices.destroy_all
+        @product.update_column(:customizable_price, true)
+
+        put :update, params: @params.merge(suggested_price: "10", customizable_price: true), as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response.parsed_body["error_message"]).to eq("Default price cents can't be blank")
+        expect(@product.reload.suggested_price_cents).to be_nil
       end
 
       context "when user email is empty" do
@@ -1360,6 +1367,43 @@ describe LinksController, :vcr, inertia: true do
 
           new_external_id_1, new_external_id_2 = @product.product_files.alive.map(&:external_id)
           expect(@product.reload.rich_content_json).to eq([{ id: rich_content.external_id, page_id: rich_content.external_id, variant_id: nil, title: "Page title", description: { type: "doc", content: old_rich_content.dup.concat([{ "type" => "fileEmbed", "attrs" => { "id" => new_external_id_1, "uid" => "64e84875-c795-567c-d2dd-96336ab093d5" } }, { "type" => "fileEmbed", "attrs" => { "id" => new_external_id_2, "uid" => "0c042930-2df1-4583-82ef-a6317213868d" } }]) }, updated_at: rich_content.reload.updated_at }])
+        end
+
+        it "does not produce transitive ID collisions when a new file's external_id matches another file's placeholder ID" do
+          rich_content_node = {
+            "type" => "doc",
+            "content" => [
+              { "type" => "fileEmbed", "attrs" => { "id" => "placeholder_a" } },
+              { "type" => "fileEmbed", "attrs" => { "id" => "placeholder_b" } },
+            ],
+          }
+
+          mappings = {
+            "placeholder_a" => "placeholder_b",  # File A's new external_id == File B's old placeholder
+            "placeholder_b" => "real_b",          # File B's new external_id
+          }
+
+          @product.send(:apply_rich_content_id_mappings, rich_content_node, mappings)
+
+          embed_ids = rich_content_node["content"].map { |node| node["attrs"]["id"] }
+          expect(embed_ids).to eq(["placeholder_b", "real_b"])
+        end
+
+        it "handles nil nodes in rich content without crashing" do
+          rich_content_node = {
+            "type" => "doc",
+            "content" => [
+              { "type" => "fileEmbed", "attrs" => { "id" => "placeholder_a" } },
+              nil,
+              { "type" => "paragraph", "content" => nil },
+              { "type" => "paragraph", "content" => [nil, { "type" => "text", "text" => "hello" }] },
+              { "type" => "fileEmbed", "attrs" => nil },
+            ]
+          }
+          mappings = { "placeholder_a" => "real_a" }
+
+          expect { @product.send(:apply_rich_content_id_mappings, rich_content_node, mappings) }.not_to raise_error
+          expect(rich_content_node["content"][0]["attrs"]["id"]).to eq("real_a")
         end
 
         it "saves variant-level rich content containing file embeds with the persisted IDs" do
@@ -4005,22 +4049,23 @@ describe LinksController, :vcr, inertia: true do
     end
 
     describe "GET cart_items_count" do
-      it "renders the Inertia page" do
+      it "returns 0 when no cart exists" do
         get :cart_items_count
 
         expect(inertia.component).to eq("Products/CartItemsCount")
-        expect(inertia.props[:cart]).to be_nil
+        expect(inertia.props[:cart_items_count]).to eq(0)
 
         html = Nokogiri::HTML.parse(response.body)
         [
           "gr:google_analytics:enabled",
           "gr:fb_pixel:enabled",
+          "gr:tiktok_pixel:enabled",
         ].each do |property|
           expect(html.xpath("//meta[@property='#{property}']/@content").text).to eq("false")
         end
       end
 
-      it "returns cart props when the user has a cart with items" do
+      it "returns the count of alive cart products" do
         sign_in @user
         product = create(:product)
         cart = create(:cart, user: @user, email: @user.email)
@@ -4029,18 +4074,19 @@ describe LinksController, :vcr, inertia: true do
         get :cart_items_count
 
         expect(inertia.component).to eq("Products/CartItemsCount")
-        expect(inertia.props[:cart]).to match(
-          email: @user.email,
-          returnUrl: "",
-          rejectPppDiscount: false,
-          discountCodes: [],
-          items: [
-            a_hash_including(
-              product: a_hash_including(permalink: product.unique_permalink),
-              quantity: 1,
-            ),
-          ],
-        )
+        expect(inertia.props[:cart_items_count]).to eq(1)
+      end
+
+      it "does not count deleted cart products" do
+        sign_in @user
+        product = create(:product)
+        cart = create(:cart, user: @user, email: @user.email)
+        create(:cart_product, cart:, product:)
+        create(:cart_product, cart:, product: create(:product), deleted_at: Time.current)
+
+        get :cart_items_count
+
+        expect(inertia.props[:cart_items_count]).to eq(1)
       end
     end
 
@@ -4272,6 +4318,28 @@ describe LinksController, :vcr, inertia: true do
         ProductPresenter.card_for_web(product:, request: @request, recommended_by: @recommended_by, show_seller: !@on_profile, target:, query:).as_json
       end
 
+      it "accepts a string ids param when searching by user" do
+        Link.__elasticsearch__.create_index!(force: true)
+        creator = create(:compliant_user, username: "creatordudey", name: "Creator Dudey")
+        section = create(:seller_profile_products_section, seller: creator)
+        product = create(:product, name: "Top quality weasel", user: creator)
+        other_product = create(:product, name: "First product", user: creator)
+        section.update!(shown_products: [other_product, product].map { _1.id })
+        Link.import(force: true, refresh: true)
+
+        @recommended_by = nil
+        @on_profile = true
+
+        get :search, params: {
+          user_id: creator.external_id,
+          section_id: section.external_id,
+          ids: product.external_id
+        }
+
+        expect(response).to be_successful
+        expect(response.parsed_body["products"]).to eq([product_json(product, "profile")])
+      end
+
       describe "Setting and ordering" do
         before do
           Link.__elasticsearch__.create_index!(force: true)
@@ -4404,6 +4472,7 @@ describe LinksController, :vcr, inertia: true do
 
       describe "Loose and exact matching" do
         before do
+          Link.__elasticsearch__.create_index!(force: true)
           @products = {
             name: create(:product, name: "North American river otter"),
             desc: create(:product, description: "The North American river otter, also known as the northern river otter or the common otter, is a semiaquatic mammal."),
@@ -4422,6 +4491,7 @@ describe LinksController, :vcr, inertia: true do
             allow(product).to receive(:reviews_count).and_call_original
           end
           Link.__elasticsearch__.refresh_index!
+          sleep 0.5
         end
 
         it "finds all matches if exact match not specified" do

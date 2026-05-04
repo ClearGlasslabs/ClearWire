@@ -58,7 +58,7 @@ class Order::CreateService
         card_params = common_params.slice(
           :card_data_handling_mode, :stripe_payment_method_id, :paypal_order_id,
           :stripe_customer_id, :stripe_setup_intent_id
-        ).compact
+        ).to_h.symbolize_keys.compact
 
         purchase, error, sca_response = Purchase::CreateService.new(
           product:,
@@ -74,7 +74,7 @@ class Order::CreateService
             order.save!
             sca_response = sca_response.except(:purchase).merge(
               order: {
-                id: order.external_id,
+                id: order.secure_external_id(scope: "confirm", expires_at: 1.hour.from_now),
                 stripe_connect_account_id: sca_response.dig(:purchase, :stripe_connect_account_id)
               }
             )
@@ -172,6 +172,7 @@ class Order::CreateService
         purchase_params[:url_parameters] = parse_url_parameters_from_referrer(product)
       end
 
+      force_new_subscription = purchase_params.delete(:force_new_subscription)
       gift_params = purchase_params.extract!(:giftee_email, :giftee_id, :gift_note)
       additional_params = purchase_params.extract!(
         :is_gift, :price_id, :wallet_type, :perceived_free_trial_duration, :accepted_offer,
@@ -181,6 +182,7 @@ class Order::CreateService
       {
         purchase: purchase_params,
         gift: gift_params,
+        force_new_subscription:,
       }.merge(additional_params.to_hash.deep_symbolize_keys)
     end
 

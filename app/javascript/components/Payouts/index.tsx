@@ -30,7 +30,7 @@ import { WithTooltip } from "$app/components/WithTooltip";
 import placeholder from "$assets/images/placeholders/payouts.png";
 
 const INSTANT_PAYOUT_FEE_PERCENTAGE = 0.03;
-const MINIMUM_INSTANT_PAYOUT_AMOUNT_CENTS = 1000;
+const MINIMUM_INSTANT_PAYOUT_AMOUNT_CENTS = 10000;
 const MAXIMUM_INSTANT_PAYOUT_AMOUNT_CENTS = 999900;
 
 type StripeConnectAccount = { payout_method_type: "stripe_connect"; stripe_connect_account_id: string };
@@ -263,7 +263,6 @@ export type PayoutsProps = {
   processing_payout_periods_data: PayoutPeriodData[];
   payouts_status: "paused" | "payable";
   payouts_paused_by: "stripe" | "admin" | "system" | "user" | null;
-  payouts_paused_for_reason: string | null;
   past_payout_period_data: PayoutPeriodData[];
   instant_payout: {
     payable_amount_cents: number;
@@ -280,15 +279,20 @@ export type PayoutsProps = {
   show_instant_payouts_notice: boolean;
   pagination: PaginationProps;
   tax_center_enabled: boolean;
+  scheduled_payout: {
+    action: "refund" | "payout" | "hold";
+    status: "pending" | "flagged" | "held" | "executed";
+    scheduled_at: string;
+    payout_amount_cents: number | null;
+  } | null;
 };
 
-// TODO: move BankAccount|PaypalAccount out of CurrentPayoutsDataAndPaymentMethodWithUserPayable
-export type CurrentPayoutsDataAndPaymentMethodWithUserPayable = CurrentPeriodPayoutData &
-  (NoPayoutAccount | BankAccount | PaypalAccount | StripeConnectAccount);
+export type PaymentMethod = NoPayoutAccount | BankAccount | PaypalAccount | StripeConnectAccount;
+type LegacyPaymentMethod = LegacyNotAvailableAccount | BankAccount | PaypalAccount | StripeConnectAccount;
 
-// TODO: move BankAccount|PaypalAccount out of PastPayoutsDataAndPaymentMethod
-export type PastPayoutsDataAndPaymentMethod = PastPeriodPayoutsData &
-  (LegacyNotAvailableAccount | BankAccount | PaypalAccount | StripeConnectAccount);
+export type CurrentPayoutsDataAndPaymentMethodWithUserPayable = CurrentPeriodPayoutData & PaymentMethod;
+
+export type PastPayoutsDataAndPaymentMethod = PastPeriodPayoutsData & LegacyPaymentMethod;
 
 type PayoutPeriodData = CurrentPayoutsDataAndPaymentMethodWithUserPayable | PastPayoutsDataAndPaymentMethod;
 const Period = ({ payoutPeriodData }: { payoutPeriodData: PayoutPeriodData }) => {
@@ -391,7 +395,7 @@ const Period = ({ payoutPeriodData }: { payoutPeriodData: PayoutPeriodData }) =>
                     </a>
                   </h4>
                   {payoutPeriodData.discover_sales_count > 0 ? (
-                    <small className="text-muted">
+                    <small className="block text-muted">
                       on {payoutPeriodData.discover_sales_count}{" "}
                       {payoutPeriodData.discover_sales_count === 1 ? "sale" : "sales"}
                     </small>
@@ -410,7 +414,7 @@ const Period = ({ payoutPeriodData }: { payoutPeriodData: PayoutPeriodData }) =>
                     </a>
                   </h4>
                   {payoutPeriodData.direct_sales_count > 0 ? (
-                    <small className="text-muted">
+                    <small className="block text-muted">
                       on {payoutPeriodData.direct_sales_count}{" "}
                       {payoutPeriodData.direct_sales_count === 1 ? "sale" : "sales"}
                     </small>
@@ -657,7 +661,6 @@ const Payouts = ({
   processing_payout_periods_data,
   payouts_status,
   payouts_paused_by,
-  payouts_paused_for_reason,
   past_payout_period_data,
   instant_payout,
   show_instant_payouts_notice,
@@ -879,14 +882,11 @@ const Payouts = ({
           <Alert role="status" variant="warning">
             {payouts_paused_by === "stripe" ? (
               <strong>
-                Your payouts are currently paused by our payment processor. Please check your{" "}
+                Your payouts are currently paused by Stripe. Please check your{" "}
                 <a href="/settings/payments">Payment Settings</a> for any verification requirements.
               </strong>
             ) : payouts_paused_by === "admin" ? (
-              <strong>
-                Your payouts have been paused by Gumroad admin.
-                {payouts_paused_for_reason ? ` Reason for pause: ${payouts_paused_for_reason}` : null}
-              </strong>
+              <strong>Your payouts have been paused by Gumroad.</strong>
             ) : payouts_paused_by === "system" ? (
               <strong>
                 Your payouts have been automatically paused for a security review and will be resumed once the review

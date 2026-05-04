@@ -1929,18 +1929,31 @@ describe StripeMerchantAccountManager, :vcr do
         }
       end
 
-      it "creates an account at stripe with all the params and returns the corresponding merchant account" do
-        expect(Stripe::Account).to receive(:create).with(expected_account_params).and_call_original
+      it "raises a user not ready error because new India accounts are blocked" do
+        expect(Stripe::Account).not_to receive(:create)
 
-        merchant_account = subject.create_account(user, passphrase: "1234")
+        expect do
+          subject.create_account(user, passphrase: "1234")
+        end.to raise_error(MerchantRegistrationUserNotReadyError, /not supported yet/)
+        expect(user.merchant_accounts.alive.count).to eq(0)
+      end
 
-        expect(merchant_account.charge_processor_id).to eq(StripeChargeProcessor.charge_processor_id)
-        expect(merchant_account.charge_processor_merchant_id).to be_present
-        expect(merchant_account.country).to eq("IN")
-        expect(merchant_account.currency).to eq("inr")
-        expect(bank_account.reload.stripe_connect_account_id).to eq(merchant_account.charge_processor_merchant_id)
-        expect(bank_account.reload.stripe_bank_account_id).to match(/ba_[a-zA-Z0-9]+/)
-        expect(bank_account.reload.stripe_fingerprint).to match(/[a-zA-Z0-9]+/)
+      context "when new India account creation is not blocked" do
+        before { stub_const("StripeMerchantAccountManager::NEW_ACCOUNT_CREATION_BLOCKED_COUNTRIES", []) }
+
+        it "creates an account at stripe with all the params and returns the corresponding merchant account" do
+          expect(Stripe::Account).to receive(:create).with(expected_account_params).and_call_original
+
+          merchant_account = subject.create_account(user, passphrase: "1234")
+
+          expect(merchant_account.charge_processor_id).to eq(StripeChargeProcessor.charge_processor_id)
+          expect(merchant_account.charge_processor_merchant_id).to be_present
+          expect(merchant_account.country).to eq("IN")
+          expect(merchant_account.currency).to eq("inr")
+          expect(bank_account.reload.stripe_connect_account_id).to eq(merchant_account.charge_processor_merchant_id)
+          expect(bank_account.reload.stripe_bank_account_id).to match(/ba_[a-zA-Z0-9]+/)
+          expect(bank_account.reload.stripe_fingerprint).to match(/[a-zA-Z0-9]+/)
+        end
       end
     end
 
@@ -3081,6 +3094,22 @@ describe StripeMerchantAccountManager, :vcr do
         expect(bank_account.reload.stripe_connect_account_id).to eq(merchant_account.charge_processor_merchant_id)
         expect(bank_account.reload.stripe_bank_account_id).to match(/ba_[a-zA-Z0-9]+/)
         expect(bank_account.reload.stripe_fingerprint).to match(/[a-zA-Z0-9]+/)
+      end
+
+      context "when the seller stored a plain account number instead of an IBAN" do
+        let(:bank_account) { create(:el_salvador_bank_account, user:, bank_number: "CAGRSVSS", account_number: "3280602160", account_number_last_four: "2160") }
+
+        it "constructs an IBAN from the SWIFT/BIC and account number before sending to Stripe" do
+          captured_params = nil
+          allow(Stripe::Account).to receive(:create) do |params|
+            captured_params = params
+            raise Stripe::APIError, "stop_here"
+          end
+
+          expect { subject.create_account(user, passphrase: "1234") }.to raise_error(Stripe::APIError, "stop_here")
+          expect(captured_params[:bank_account][:account_number]).to eq("SV88CAGR00000000003280602160")
+          expect(captured_params[:bank_account][:routing_number]).to eq("CAGRSVSS")
+        end
       end
     end
     describe "all info provided of a Chile individual" do
@@ -8518,7 +8547,7 @@ describe StripeMerchantAccountManager, :vcr do
 
         allow(Stripe::Account).to receive(:create).and_return(fake_stripe_account)
         allow(Stripe::Account).to receive(:create_person).and_raise(Stripe::InvalidRequestError.new("person creation failed", "person"))
-        allow(Bugsnag).to receive(:notify)
+        allow(ErrorNotifier).to receive(:notify)
       end
 
       it "deletes the Stripe account and marks the merchant account as deleted" do
@@ -8537,7 +8566,7 @@ describe StripeMerchantAccountManager, :vcr do
           subject.create_account(user, passphrase: "1234")
         end.to raise_error(Stripe::InvalidRequestError)
         expect(user.merchant_accounts.alive.count).to eq(0)
-        expect(Bugsnag).to have_received(:notify).at_least(:twice)
+        expect(ErrorNotifier).to have_received(:notify).at_least(:twice)
       end
     end
 
@@ -9131,6 +9160,33 @@ describe StripeMerchantAccountManager, :vcr do
           end.to have_enqueued_mail(ContactingCreatorMailer, :invalid_bank_account).with(user.id)
         end
       end
+
+      describe "account holder name rejected by Stripe" do
+        before do
+          expect(Stripe::Account).to receive(:update).and_raise(Stripe::InvalidRequestError.new("Account holder name is invalid", "account_holder_name", code: "incorrect_account_holder_name"))
+        end
+
+        it "emails the creator about the rejected name" do
+          expect do
+            subject.update_bank_account(user, passphrase: "1234")
+          end.to have_enqueued_mail(ContactingCreatorMailer, :invalid_account_holder_name).with(user.id)
+        end
+      end
+
+      describe "Stripe rejects the external account with a CardError" do
+        before do
+          expect(Stripe::Account).to receive(:update).and_raise(Stripe::CardError.new("Your card does not support this type of purchase.", "external_account", code: "card_decline_rate_limit_exceeded"))
+        end
+
+        it "emails the creator, records a payout note, and returns :card_not_supported" do
+          result = nil
+          expect do
+            result = subject.update_bank_account(user, passphrase: "1234")
+          end.to have_enqueued_mail(ContactingCreatorMailer, :invalid_bank_account).with(user.id)
+          expect(result).to eq(:card_not_supported)
+          expect(user.comments.with_type_payout_note.last.content).to include("Stripe bank sync failed")
+        end
+      end
     end
 
     describe "all info provided previously, bank account not changed" do
@@ -9145,6 +9201,22 @@ describe StripeMerchantAccountManager, :vcr do
           stripe_account
         end
         subject.update_bank_account(user, passphrase: "1234")
+      end
+
+      it "syncs to Stripe when the account holder name has changed for JP accounts" do
+        user_compliance_info.update_columns(country: "Japan")
+        bank_account_1.update!(account_holder_full_name: "Updated Name")
+
+        stripe_account = {
+          "metadata" => { "bank_account_id" => bank_account_1.external_id },
+          "external_accounts" => [{ "account_holder_name" => "Previous Name" }]
+        }
+        stripe_account.define_singleton_method(:id) { "acct_123" }
+
+        expect(Stripe::Account).to receive(:retrieve).with(merchant_account.charge_processor_merchant_id).and_return(stripe_account)
+        expect(Stripe::Account).to receive(:update).with("acct_123", hash_including(bank_account: hash_including(account_holder_name: "Updated Name"))).and_raise(StandardError, "stop here")
+
+        expect { subject.update_bank_account(user, passphrase: "1234") }.to raise_error(StandardError, "stop here")
       end
     end
 
@@ -9164,7 +9236,7 @@ describe StripeMerchantAccountManager, :vcr do
           }
         )).and_call_original
 
-        expect(Bugsnag).not_to receive(:notify)
+        expect(ErrorNotifier).not_to receive(:notify)
         expect { subject.update_bank_account(user, passphrase: "1234") }.not_to raise_error
       end
     end
@@ -9177,6 +9249,88 @@ describe StripeMerchantAccountManager, :vcr do
       it "raises a user not ready error" do
         expect { subject.update_bank_account(user, passphrase: "1234") }.to raise_error(MerchantRegistrationUserNotReadyError)
       end
+    end
+  end
+
+  describe ".save_stripe_bank_account_info" do
+    let(:user) { create(:named_user) }
+    let(:bank_account) { create(:japan_bank_account, user:) }
+    let(:stripe_external_account) { double(id: "ba_123", fingerprint: "fingerprint_123") }
+    let(:stripe_account) { double(id: "acct_123", external_accounts: [stripe_external_account]) }
+
+    before do
+      bank_account.update_columns(account_holder_full_name: "ハルナ マサシ")
+    end
+
+    it "persists Stripe metadata without revalidating a legacy invalid holder name" do
+      expect(bank_account).not_to be_valid
+
+      expect do
+        described_class.send(:save_stripe_bank_account_info, bank_account, stripe_account)
+      end.to change { CheckPaymentAddressWorker.jobs.size }.by(1)
+
+      expect(bank_account.reload.stripe_connect_account_id).to eq("acct_123")
+      expect(bank_account.stripe_external_account_id).to eq("ba_123")
+      expect(bank_account.stripe_fingerprint).to eq("fingerprint_123")
+    end
+  end
+
+  describe ".handle_stripe_info_requirements" do
+    let(:active_bank_account) { instance_double(CardBankAccount, id: 123, stripe_connect_account_id: nil) }
+    let(:requested_scope) { double(find_each: nil, where: double(present?: false), last: nil) }
+    let(:user_compliance_info_requests) { double(requested: requested_scope) }
+    let(:user) do
+      instance_double(
+        User,
+        account_active?: true,
+        user_compliance_info_requests:
+      )
+    end
+    let(:merchant_account) do
+      instance_double(
+        MerchantAccount,
+        alive?: true,
+        charge_processor_alive?: true,
+        user:
+      )
+    end
+    let(:merchant_account_relation) { double(last: merchant_account) }
+    let(:stripe_account) do
+      {
+        "id" => "acct_123",
+        "business_type" => "individual",
+        "individual" => {},
+        "requirements" => {
+          "currently_due" => [],
+          "eventually_due" => [],
+          "past_due" => []
+        },
+        "charges_enabled" => true
+      }
+    end
+
+    before do
+      allow(MerchantAccount).to receive(:where).and_return(merchant_account_relation)
+      allow(described_class).to receive(:update_bank_account).with(user, passphrase: GlobalConfig.get("STRONGBOX_GENERAL_PASSWORD")).and_return(:stripe_unknown_error)
+      allow(active_bank_account).to receive(:is_a?) { |klass| klass == CardBankAccount }
+      allow(user).to receive(:active_bank_account).and_return(active_bank_account, active_bank_account, active_bank_account, nil, nil)
+    end
+
+    it "captures the active bank once before enqueueing the retry worker" do
+      expect do
+        described_class.send(:handle_stripe_info_requirements, "evt_123", stripe_account, {})
+      end.to change { HandleNewBankAccountWorker.jobs.size }.by(1)
+
+      expect(HandleNewBankAccountWorker.jobs.last["args"]).to eq([active_bank_account.id])
+    end
+
+    it "captures the active bank once before reading card sync state" do
+      allow(described_class).to receive(:update_bank_account).with(user, passphrase: GlobalConfig.get("STRONGBOX_GENERAL_PASSWORD")).and_return(:synced)
+      allow(user).to receive(:active_bank_account).and_return(active_bank_account, nil, nil)
+
+      expect do
+        described_class.send(:handle_stripe_info_requirements, "evt_123", stripe_account, {})
+      end.not_to raise_error
     end
   end
 
@@ -9669,8 +9823,8 @@ describe StripeMerchantAccountManager, :vcr do
             end
 
             it "does not email the creator if they are suspended" do
-              user.flag_for_fraud!(author_name: "iffy")
-              user.suspend_for_fraud!(author_name: "iffy")
+              user.flag_for_fraud!(author_name: "ContentModeration")
+              user.suspend_for_fraud!(author_name: "ContentModeration")
 
               expect do
                 described_class.handle_stripe_event(stripe_event)

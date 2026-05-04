@@ -3,13 +3,15 @@
 class CustomersController < Sellers::BaseController
   include CurrencyHelper
 
-  skip_before_action :check_suspended
+  rescue_from Faraday::TimeoutError, with: :handle_search_timeout
+
+
   before_action :authorize
   before_action :set_on_page_type
 
   CUSTOMERS_PER_PAGE = 20
 
-  layout "inertia", only: [:index]
+  layout "inertia", only: [:index, :show]
 
   def index
     product = Link.fetch(params[:link_id]) if params[:link_id].present?
@@ -27,6 +29,24 @@ class CustomersController < Sellers::BaseController
            props: { customers_presenter: customers_presenter.customers_props }
   end
 
+  def show
+    purchase = current_seller.sales.find_by_external_id!(params[:purchase_id])
+    presenter = CustomerPresenter.new(purchase:)
+    customer_data = presenter.customer(pundit_user:)
+
+    render inertia: "Customers/Show",
+           props: {
+             customer: customer_data,
+             countries: Compliance::Countries.for_select.map(&:last),
+             can_ping: current_seller.urls_for_ping_notification(ResourceSubscription::SALE_RESOURCE_NAME).size > 0,
+             show_refund_fee_notice: current_seller.show_refund_fee_notice?,
+             emails: build_customer_emails(purchase),
+             missed_posts: InertiaRails.defer { presenter.missed_posts },
+             charges: build_charges(purchase),
+             product_purchases: purchase.is_bundle_purchase ? purchase.product_purchases.map { CustomerPresenter.new(purchase: _1).customer(pundit_user:) } : [],
+           }
+  end
+
   def paged
     params[:page] = params[:page].to_i - 1
     sales = fetch_sales(
@@ -42,6 +62,7 @@ class CustomersController < Sellers::BaseController
       created_before: params[:created_before],
       country: params[:country],
       active_customers_only: ActiveModel::Type::Boolean.new.cast(params[:active_customers_only]),
+      minimum_license_uses: Feature.active?(:license_uses_sales_filter, current_seller) ? params[:minimum_license_uses] : nil,
     )
     customers_presenter = CustomersPresenter.new(
       pundit_user:,
@@ -55,57 +76,12 @@ class CustomersController < Sellers::BaseController
 
   def customer_charges
     purchase = Purchase.where(email: params[:purchase_email].to_s).find_by_external_id!(params[:purchase_id])
-
-    if purchase.is_original_subscription_purchase?
-      return render json: purchase.subscription.purchases.successful.map { CustomerPresenter.new(purchase: _1).charge }
-    elsif purchase.is_commission_deposit_purchase?
-      return render json: [purchase, purchase.commission.completion_purchase].compact.map { CustomerPresenter.new(purchase: _1).charge }
-    end
-
-    render json: []
+    render json: build_charges(purchase)
   end
 
   def customer_emails
-    original_purchase = current_seller.sales.find_by_external_id!(params[:purchase_id]) if params[:purchase_id].present?
-
-    all_purchases = if original_purchase.subscription.present?
-      original_purchase.subscription.purchases.all_success_states_except_preorder_auth_and_gift.preload(:receipt_email_info_from_purchase)
-    else
-      [original_purchase]
-    end
-
-    receipts = all_purchases.map do |purchase|
-      receipt_email_info = purchase.receipt_email_info
-      {
-        type: "receipt",
-        name: receipt_email_info&.email_name&.humanize || "Receipt",
-        id: purchase.external_id,
-        state: receipt_email_info&.state&.humanize || "Delivered",
-        state_at: receipt_email_info.present? ? receipt_email_info.most_recent_state_at.in_time_zone(current_seller.timezone) : purchase.created_at.in_time_zone(current_seller.timezone),
-        url: receipt_purchase_url(purchase.external_id, email: purchase.email),
-        date: purchase.created_at
-      }
-    end
-
-    posts = original_purchase.installments.alive.where(seller_id: original_purchase.seller_id).map do |post|
-      email_info = CreatorContactingCustomersEmailInfo.where(purchase: original_purchase, installment: post).last
-      {
-        type: "post",
-        name: post.name,
-        id: post.external_id,
-        state: email_info.state.humanize,
-        state_at: email_info.most_recent_state_at.in_time_zone(current_seller.timezone),
-        date: post.published_at
-      }
-    end
-
-    unpublished_posts = posts.select { |post| post[:date].nil? }
-    published_posts = posts - unpublished_posts
-    emails = published_posts
-    emails = emails.sort_by { |e| -e[:date].to_i } + unpublished_posts
-    emails = receipts + emails unless original_purchase.is_bundle_product_purchase?
-
-    render json: emails
+    purchase = current_seller.sales.find_by_external_id!(params[:purchase_id]) if params[:purchase_id].present?
+    render json: build_customer_emails(purchase)
   end
 
   def missed_posts
@@ -120,8 +96,16 @@ class CustomersController < Sellers::BaseController
     render json: purchase.product_purchases.map { CustomerPresenter.new(purchase: _1).customer(pundit_user:) }
   end
 
+  def handle_search_timeout
+    if action_name == "paged"
+      render json: { success: false, error: "request timed out" }, status: :gateway_timeout
+    else
+      redirect_back fallback_location: root_path, warning: "Request timed out. Please try again.", status: :see_other
+    end
+  end
+
   private
-    def fetch_sales(query: nil, sort: nil, products: nil, variants: nil, excluded_products: nil, excluded_variants: nil, minimum_amount_cents: nil, maximum_amount_cents: nil, created_after: nil, created_before: nil, country: nil, active_customers_only: false)
+    def fetch_sales(query: nil, sort: nil, products: nil, variants: nil, excluded_products: nil, excluded_variants: nil, minimum_amount_cents: nil, maximum_amount_cents: nil, created_after: nil, created_before: nil, country: nil, active_customers_only: false, minimum_license_uses: nil)
       search_options = {
         seller: current_seller,
         country: Compliance::Countries.historical_names(country || params[:bought_from]).presence,
@@ -145,12 +129,15 @@ class CustomersController < Sellers::BaseController
 
       if active_customers_only
         search_options[:exclude_deactivated_subscriptions] = true
+        search_options[:exclude_cancelled_or_pending_cancellation_subscriptions] = true
         search_options[:exclude_refunded_except_subscriptions] = true
         search_options[:exclude_unreversed_chargedback] = true
       end
 
       search_options[:price_greater_than] = get_usd_cents(current_seller.currency_type, minimum_amount_cents) if minimum_amount_cents.present?
       search_options[:price_less_than] = get_usd_cents(current_seller.currency_type, maximum_amount_cents) if maximum_amount_cents.present?
+
+      search_options[:license_uses_greater_than_or_equal_to] = minimum_license_uses.to_i if minimum_license_uses.present?
 
       if created_after || created_before
         timezone = ActiveSupport::TimeZone[current_seller.timezone]
@@ -179,6 +166,64 @@ class CustomersController < Sellers::BaseController
         )
         .in_order_of(:id, sales.records.ids)
         .load
+    end
+
+    def build_charges(purchase)
+      if purchase.is_original_subscription_purchase?
+        purchase.subscription.purchases.successful.map { CustomerPresenter.new(purchase: _1).charge }
+      elsif purchase.is_commission_deposit_purchase?
+        [purchase, purchase.commission.completion_purchase].compact.map { CustomerPresenter.new(purchase: _1).charge }
+      else
+        []
+      end
+    end
+
+    def build_customer_emails(original_purchase)
+      all_purchases = if original_purchase.subscription.present?
+        original_purchase.subscription.purchases.all_success_states_except_preorder_auth_and_gift.preload(:receipt_email_info_from_purchase)
+      else
+        [original_purchase]
+      end
+
+      receipts = all_purchases.map do |purchase|
+        receipt_email_info = purchase.receipt_email_info
+        {
+          type: "receipt",
+          name: receipt_email_info&.email_name&.humanize || "Receipt",
+          id: purchase.external_id,
+          state: receipt_email_info&.state&.humanize || "Delivered",
+          state_at: receipt_email_info.present? ? receipt_email_info.most_recent_state_at.in_time_zone(current_seller.timezone) : purchase.created_at.in_time_zone(current_seller.timezone),
+          url: receipt_purchase_url(purchase.external_id, email: purchase.email),
+          date: purchase.created_at
+        }
+      end
+
+      installments = original_purchase.installments.alive.where(seller_id: original_purchase.seller_id).to_a
+      email_infos_by_installment = CreatorContactingCustomersEmailInfo
+        .where(purchase: original_purchase, installment_id: installments.map(&:id))
+        .order(:id)
+        .group_by(&:installment_id)
+        .transform_values(&:last)
+
+      posts = installments.map do |post|
+        email_info = email_infos_by_installment[post.id]
+        {
+          type: "post",
+          name: post.name,
+          id: post.external_id,
+          state: email_info.state.humanize,
+          state_at: email_info.most_recent_state_at.in_time_zone(current_seller.timezone),
+          date: post.published_at
+        }
+      end
+
+      unpublished_posts = posts.select { |post| post[:date].nil? }
+      published_posts = posts - unpublished_posts
+      emails = published_posts
+      emails = emails.sort_by { |e| -e[:date].to_i } + unpublished_posts
+      emails = receipts + emails if !original_purchase.is_bundle_product_purchase?
+
+      emails
     end
 
     def set_default_page_title

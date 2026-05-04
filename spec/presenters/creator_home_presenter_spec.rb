@@ -35,6 +35,12 @@ describe CreatorHomePresenter do
       expect(presenter.creator_home_props[:has_sale]).to eq(true)
     end
 
+    it "returns only first_product in getting started stats when checklist is dismissed" do
+      seller.update!(has_dismissed_getting_started_checklist: true)
+
+      expect(presenter.creator_home_props[:getting_started_stats]).to eq({ "first_product" => false })
+    end
+
     it "includes initial user getting started stats" do
       expect(presenter.creator_home_props[:getting_started_stats]).to match(
         {
@@ -349,7 +355,8 @@ describe CreatorHomePresenter do
         )
       end
 
-      it "returns empty tax forms when tax_center feature flag is enabled" do
+      it "returns empty tax forms when tax_center feature flag is enabled for US user" do
+        create(:user_compliance_info, user: seller)
         Feature.activate_user(:tax_center, seller)
 
         create(:user_tax_form, user: seller, tax_year: 2021, tax_form_type: "us_1099_k")
@@ -359,6 +366,25 @@ describe CreatorHomePresenter do
         expect(props[:tax_center_enabled]).to be(true)
         expect(props[:tax_forms]).to eq([])
         expect(props[:show_1099_download_notice]).to be(true)
+      end
+
+      it "limits tax form years to avoid timeouts for long-lived accounts" do
+        seller.update!(created_at: 10.years.ago)
+        allow(seller).to receive(:eligible_for_1099?).and_return(true)
+        allow(seller).to receive(:tax_form_1099_download_url).and_return(download_url)
+
+        tax_forms = presenter.creator_home_props[:tax_forms]
+        expect(tax_forms.keys.length).to be <= 4
+        expect(tax_forms.keys.min).to be >= Time.current.year - 3
+      end
+
+      it "disables tax center for non-US user even with feature flag enabled" do
+        create(:user_compliance_info_singapore, user: seller)
+        Feature.activate_user(:tax_center, seller)
+
+        props = presenter.creator_home_props
+
+        expect(props[:tax_center_enabled]).to be(false)
       end
     end
   end

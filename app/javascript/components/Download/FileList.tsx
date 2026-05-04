@@ -198,7 +198,7 @@ export const FileRow = ({
     toggleAudioDrawer();
   };
 
-  if (isMobileAppWebView && isEmbed && FileUtils.isAudioExtension(file.extension)) {
+  if (isMobileAppWebView && FileUtils.isAudioExtension(file.extension)) {
     return <MobileAppAudioFileRow file={file} />;
   }
 
@@ -568,16 +568,14 @@ const MobileAppAudioFileRow = ({ file }: { file: FileItem }) => {
           <div style={{ display: "grid", gridColumn: "4 span", gap: "var(--spacer-1)" }}>
             <meter
               value={latestMediaLocation / file.duration}
-              className="border-0"
-              style={{
-                ...{
-                  background: "var(--active-bg)",
-                  height: "var(--spacer-1)",
-                },
-                ...(isPlaying ? {} : { "--optimum-value-background": "currentColor" }),
-              }}
+              className={classNames(
+                "h-1 w-full appearance-none rounded border-0 bg-active-bg [&::-moz-meter-bar]:rounded [&::-webkit-meter-bar]:contents [&::-webkit-meter-inner-element]:contents [&::-webkit-meter-optimum-value]:rounded",
+                isPlaying
+                  ? "[&::-moz-meter-bar]:[background:var(--color-accent)] [&::-webkit-meter-optimum-value]:[background:var(--color-accent)]"
+                  : "[&::-moz-meter-bar]:[background:currentColor] [&::-webkit-meter-optimum-value]:[background:currentColor]",
+              )}
             />
-            <small>{humanizedDuration(file.duration - latestMediaLocation)} left</small>
+            <small className="block">{humanizedDuration(file.duration - latestMediaLocation)} left</small>
           </div>
         ) : null}
         {file.description?.trim() ? (
@@ -744,8 +742,8 @@ const SendToKindleContainer = ({
         data: { email: emailEntry, file_external_id: fileId },
       });
 
-      const json = cast<{ success: boolean }>(await response.json());
-      if (!json.success) throw new ResponseError("Please enter a valid Kindle email address.");
+      const json = cast<{ success: boolean; error?: string }>(await response.json());
+      if (!json.success) throw new ResponseError(json.error ?? "Something went wrong.");
 
       showAlert("It's been sent to your Kindle.", "success");
       onDone();

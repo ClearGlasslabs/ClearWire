@@ -1,4 +1,3 @@
-import { TwitterX } from "@boxicons/react";
 import * as React from "react";
 
 import { CreatorProfile } from "$app/parsers/profile";
@@ -10,6 +9,7 @@ import { useLoggedInUser } from "$app/components/LoggedInUser";
 import { PoweredByFooter } from "$app/components/PoweredByFooter";
 import { TopCreatorBadge } from "$app/components/Product/AuthorByline";
 import { FollowForm } from "$app/components/Profile/FollowForm";
+import { Avatar } from "$app/components/ui/Avatar";
 import { useIsAboveBreakpoint } from "$app/components/useIsAboveBreakpoint";
 import { WithTooltip } from "$app/components/WithTooltip";
 
@@ -24,17 +24,11 @@ export const Layout = ({ creatorProfile, hideFollowForm, children }: LayoutProps
   const loggedInUser = useLoggedInUser();
   const isDesktop = useIsAboveBreakpoint("lg");
 
-  const headerButtons =
-    creatorProfile.twitter_handle || cartItemsCount ? (
-      <div className="ml-auto flex items-center gap-3">
-        {creatorProfile.twitter_handle ? (
-          <NavigationButton outline href={`https://twitter.com/${creatorProfile.twitter_handle}`} target="_blank">
-            <TwitterX pack="brands" className="size-5" />
-          </NavigationButton>
-        ) : null}
-        <CartNavigationButton />
-      </div>
-    ) : null;
+  const headerButtons = cartItemsCount ? (
+    <div className="ml-auto flex items-center gap-3">
+      <CartNavigationButton />
+    </div>
+  ) : null;
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -53,7 +47,7 @@ export const Layout = ({ creatorProfile, hideFollowForm, children }: LayoutProps
                 Impersonate
               </NavigationButton>
             ) : null}
-            <img className="user-avatar" src={creatorProfile.avatar_url} alt="Profile Picture" />
+            <Avatar src={creatorProfile.avatar_url} alt="Profile Picture" />
             <a href={Routes.root_path()} className="flex items-center gap-2 no-underline">
               {creatorProfile.name}
               {creatorProfile.is_verified ? (
@@ -72,7 +66,7 @@ export const Layout = ({ creatorProfile, hideFollowForm, children }: LayoutProps
           {isDesktop ? headerButtons : null}
         </div>
       </header>
-      <main className="flex-1">
+      <main className="flex flex-1 flex-col">
         {children}
         <PoweredByFooter className="mx-auto w-full max-w-6xl lg:py-6 lg:text-left" />
       </main>

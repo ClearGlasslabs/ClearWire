@@ -24,7 +24,7 @@ class Settings::PaymentsController < Settings::BaseController
         flash[:notice] = "Your country has been updated!"
         return redirect_to settings_payments_path, status: :see_other
       rescue => e
-        Bugsnag.notify("Update country failed for user #{current_seller.id} (from #{compliance_info.country_code} to #{updated_country_code}): #{e}")
+        ErrorNotifier.notify("Update country failed for user #{current_seller.id} (from #{compliance_info.country_code} to #{updated_country_code}): #{e}")
         return redirect_with_error("Country update failed")
       end
     end
@@ -81,14 +81,14 @@ class Settings::PaymentsController < Settings::BaseController
     if current_seller.active_bank_account && current_seller.merchant_accounts.stripe.alive.empty? && current_seller.native_payouts_supported?
       begin
         StripeMerchantAccountManager.create_account(current_seller, passphrase: GlobalConfig.get("STRONGBOX_GENERAL_PASSWORD"))
-      rescue Stripe::InvalidRequestError => e
-        if e.code == "postal_code_invalid"
+      rescue Stripe::StripeError, MerchantRegistrationUserNotReadyError => e
+        if e.is_a?(Stripe::InvalidRequestError) && e.code == "postal_code_invalid"
           country = current_seller.fetch_or_build_user_compliance_info.legal_entity_country
-          redirect_with_error("The postal code you entered is not valid for #{country}.")
-        else
-          redirect_with_error(e.try(:message) || "Something went wrong.")
+          return redirect_with_error("The postal code you entered is not valid for #{country}.")
         end
-        return
+        if e.is_a?(MerchantRegistrationUserNotReadyError)
+          return redirect_with_error("Bank payouts are not supported in your country yet. Please use PayPal instead.")
+        end
         return redirect_with_error(e.try(:message) || "Something went wrong.")
       end
     end
@@ -208,6 +208,8 @@ class Settings::PaymentsController < Settings::BaseController
                         "Email address cannot contain non-ASCII characters"
                       when :paypal_payouts_not_supported
                         "PayPal payouts are not supported in your country."
+                      when :concurrent_payout_method_change
+                        "Another change was submitted at the same time. Please try again."
       end
 
       redirect_with_error(error_message)

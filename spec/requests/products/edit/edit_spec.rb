@@ -93,9 +93,8 @@ describe("Product Edit Scenario", type: :system, js: true) do
 
     visit edit_link_path(product.unique_permalink) + "/content"
 
-    select_disclosure "Upload files" do
-      attach_product_file(file_fixture("Alice's Adventures in Wonderland.pdf"))
-    end
+    select_disclosure "Upload files"
+    attach_product_file(file_fixture("Alice's Adventures in Wonderland.pdf"))
 
     expect(page).to have_embed(name: "Alice's Adventures in Wonderland")
     wait_for_file_embed_to_finish_uploading(name: "Alice's Adventures in Wonderland")
@@ -450,6 +449,32 @@ describe("Product Edit Scenario", type: :system, js: true) do
     expect(product.reload.installment_plan).to be_nil
   end
 
+  it "allows enabling installment plans for free products with paid variants" do
+    product.installment_plan&.destroy!
+    variant_category = create(:variant_category, link: product, title: "Tier")
+    create(:variant, variant_category: variant_category, name: "Free", price_difference_cents: 0)
+    create(:variant, variant_category: variant_category, name: "Pro", price_difference_cents: 1000)
+
+    visit edit_link_path(product.unique_permalink)
+
+    within_section "Pricing" do
+      fill_in "Amount", with: 0
+    end
+
+    save_change
+    product.reload
+    expect(product.customizable_price).to be false
+
+    within_section "Pricing" do
+      expect(page).to have_unchecked_field("Allow customers to pay what they want", disabled: false)
+      check "Allow customers to pay in installments"
+      fill_in "Number of installments", with: 2
+    end
+
+    save_change
+    expect(product.reload.installment_plan.number_of_installments).to eq(2)
+  end
+
   it "allows user to update custom permalink and limit product sales" do
     visit edit_link_path(product.unique_permalink)
     new_custom_permalink = "cba"
@@ -656,6 +681,7 @@ describe("Product Edit Scenario", type: :system, js: true) do
     it "shows eligibility notice until dismissed and success notice if recommendable product" do
       expect(product.recommendable?).to be(false)
       visit edit_link_path(product.unique_permalink) + "/share"
+      expect(page).to have_status(text: "To appear on Gumroad Discover, make sure to meet all the")
       expect(page).not_to have_status(text: "#{product.name} is listed on Gumroad Discover.")
 
       click_on "Close"
@@ -1175,5 +1201,29 @@ describe("Product Edit Scenario", type: :system, js: true) do
     product.reload
     expect(product.community_chat_enabled?).to be(false)
     expect(product.active_community).to be_nil
+  end
+
+  it "navigates between edit tabs" do
+    visit edit_link_path(product.unique_permalink)
+    expect(page).to have_text(product.name)
+
+    click_on "Content"
+    expect(page).to have_current_path(%r{/edit/content})
+
+    click_on "Receipt"
+    expect(page).to have_current_path(%r{/edit/receipt})
+
+    click_on "Product"
+    expect(page).to have_current_path(%r{/edit\z})
+  end
+
+  it "loads edit sub-routes directly" do
+    visit "/products/#{product.unique_permalink}/edit/content"
+    expect(page).to have_current_path(%r{/edit/content})
+    expect(page).to have_text(product.name)
+
+    visit "/products/#{product.unique_permalink}/edit/receipt"
+    expect(page).to have_current_path(%r{/edit/receipt})
+    expect(page).to have_text(product.name)
   end
 end

@@ -6,11 +6,15 @@ class ThumbnailsController < Sellers::BaseController
   def create
     authorize Thumbnail
 
+    if !params[:thumbnail].respond_to?(:permit)
+      return render(json: { success: false, error: "Invalid thumbnail parameter. Expected signed_blob_id." }, status: :bad_request)
+    end
+
     thumbnail = @product.thumbnail || @product.build_thumbnail
 
     if permitted_params[:signed_blob_id].present?
       thumbnail.file.attach(permitted_params[:signed_blob_id])
-      thumbnail.file.analyze
+      Timeout.timeout(30) { thumbnail.file.analyze }
       thumbnail.unsplash_url = nil
     end
 
@@ -22,7 +26,9 @@ class ThumbnailsController < Sellers::BaseController
     else
       render(json: { success: false, error: thumbnail.errors.any? ? thumbnail.errors.full_messages.to_sentence : "Could not process your preview, please try again." })
     end
-  rescue *INTERNET_EXCEPTIONS
+  rescue Timeout::Error
+    render(json: { success: false, error: "Thumbnail processing took too long, please try again with a smaller image." })
+  rescue ActiveRecord::InvalidForeignKey, ActiveStorage::FileNotFoundError, *INTERNET_EXCEPTIONS
     render(json: { success: false, error: "Could not process your thumbnail, please try again." })
   end
 

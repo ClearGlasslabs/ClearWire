@@ -38,7 +38,7 @@ type Props = {
 };
 
 const MIN_FEE_PERCENT = 1;
-const MAX_FEE_PERCENT = 90;
+const MAX_FEE_PERCENT = 75;
 const isValidFeePercent = (fee: number | null) => fee !== null && fee >= MIN_FEE_PERCENT && fee <= MAX_FEE_PERCENT;
 const validateProduct = (product: SelfServeAffiliateProduct): InvalidProductAttrs => {
   const invalidAttributes: InvalidProductAttrs = new Set();
@@ -170,7 +170,7 @@ export default function AffiliatesOnboarding() {
                   readOnly
                   disabled={!enableAffiliateLink}
                   defaultValue={affiliateRequestUrl}
-                  className="text-singleline"
+                  className="truncate"
                 />
                 {enableAffiliateLink ? (
                   <CopyToClipboard text={affiliateRequestUrl}>
@@ -277,7 +277,7 @@ const ProductRow = ({ product, disabled, onChange }: ProductRowProps) => {
                 <Input
                   type="text"
                   autoComplete="off"
-                  placeholder="Commission"
+                  aria-label="Commission"
                   disabled={disabled || !product.enabled}
                   {...inputProps}
                 />

@@ -14,11 +14,11 @@ import { asyncVoid } from "$app/utils/promise";
 import { Button } from "$app/components/Button";
 import { ConfirmBalanceForfeitOnPayoutMethodChangeModal } from "$app/components/ConfirmBalanceForfeitOnPayoutMethodChangeModal";
 import { CountrySelectionModal } from "$app/components/CountrySelectionModal";
-import { StripeConnectEmbeddedNotificationBanner } from "$app/components/PayoutPage/StripeConnectEmbeddedNotificationBanner";
 import { PriceInput } from "$app/components/PriceInput";
 import { CreditCardForm } from "$app/components/Settings/AdvancedPage/CreditCardForm";
 import { Layout } from "$app/components/Settings/Layout";
 import AccountDetailsSection from "$app/components/Settings/PaymentsPage/AccountDetailsSection";
+import AccountStatusSection, { type AccountStatus } from "$app/components/Settings/PaymentsPage/AccountStatusSection";
 import AusBackTaxesSection, { type AusBacktaxDetails } from "$app/components/Settings/PaymentsPage/AusBackTaxesSection";
 import BankAccountSection, {
   BankAccountDetails,
@@ -36,10 +36,7 @@ import { Label } from "$app/components/ui/Label";
 import { Switch } from "$app/components/ui/Switch";
 import { Tab, Tabs } from "$app/components/ui/Tabs";
 import { UpdateCountryConfirmationModal } from "$app/components/UpdateCountryConfirmationModal";
-import { useUserAgentInfo } from "$app/components/UserAgent";
 import { WithTooltip } from "$app/components/WithTooltip";
-
-import logo from "$assets/images/logo-g.svg";
 
 const KANA_NAME_REGEX = /^[\u30A0-\u30FF\u31F0-\u31FF\uFF65-\uFF9F\s\-.]*$/u;
 const KANA_ADDRESS_REGEX = /^[\u30A0-\u30FF\u31F0-\u31FF\uFF65-\uFF9F\p{Script=Latin}\d\s\-.]*$/u;
@@ -93,7 +90,7 @@ type PaymentsPageProps = {
   formatted_balance_to_forfeit_on_payout_method_change: string | null;
   payouts_paused_internally: boolean;
   payouts_paused_by: "stripe" | "admin" | "system" | "user" | null;
-  payouts_paused_for_reason: string | null;
+  account_status: AccountStatus;
   payouts_paused_by_user: boolean;
   payout_threshold_cents: number;
   minimum_payout_threshold_cents: number;
@@ -115,7 +112,6 @@ export default function PaymentsPage() {
   const props = cast<PaymentsPageProps>(page.props);
   const errors = cast<{ base?: string[] } | undefined>(page.props.errors);
 
-  const userAgentInfo = useUserAgentInfo();
   const [clientErrorMessage, setClientErrorMessage] = React.useState<ErrorMessageInfo | null>(null);
   const formRef = React.useRef<HTMLDivElement & HTMLFormElement>(null);
   const [errorFieldNames, setErrorFieldNames] = React.useState(() => new Set<FormFieldName>());
@@ -220,19 +216,30 @@ export default function PaymentsPage() {
   }, [errors, clientErrorMessage]);
 
   const isStreetAddressPOBox = (input: string) => {
-    const countryCode: CountryCode = cast(props.user.country_code);
+    return input
+      .replace(/[^\w]*/gu, "")
+      .toLocaleLowerCase()
+      .includes("pobox");
+  };
 
-    return (
-      countryCode === "US" &&
-      input
-        // Removes all non-alphanumeric characters (excluding underscores).
-        // The 'g' flag allows to match globally and the 'u' flag treats
-        // the pattern as a sequence of Unicode code points (as mandated by
-        // the 'require-unicode-regexp' ESLint rule).
-        .replace(/[^\w]*/gu, "")
-        .toLocaleLowerCase()
-        .includes("pobox")
-    );
+  const poBoxAddressErrorMessage = (countryCode: CountryCode) => {
+    if (countryCode === "US") {
+      return "We require a valid physical US address. We cannot accept a P.O. Box as a valid address.";
+    }
+
+    if (countryCode === "GH") {
+      return "We require a valid physical address in Ghana. We cannot accept a P.O. Box as a valid address.";
+    }
+
+    return "We require a valid physical address. We cannot accept a P.O. Box as a valid address.";
+  };
+
+  const countryRequiresPhysicalAddress = (countryCode: CountryCode) => {
+    return ["US", "GH"].includes(countryCode);
+  };
+
+  const isPhysicalAddressRequiredAndPOBox = (countryCode: CountryCode, input: string) => {
+    return countryRequiresPhysicalAddress(countryCode) && isStreetAddressPOBox(input);
   };
 
   const validatePhoneNumber = (input: string | null, country_code: string | null) => {
@@ -522,6 +529,15 @@ export default function PaymentsPage() {
   };
 
   const validateComplianceInfoFields = () => {
+    const streetAddressValidationContextChanged =
+      form.data.user.street_address !== props.compliance_info.street_address ||
+      form.data.user.country !== props.compliance_info.country ||
+      form.data.user.is_business !== props.compliance_info.is_business;
+    const businessStreetAddressValidationContextChanged =
+      form.data.user.business_street_address !== props.compliance_info.business_street_address ||
+      form.data.user.business_country !== props.compliance_info.business_country ||
+      form.data.user.is_business !== props.compliance_info.is_business;
+
     if (!form.data.user.first_name) {
       markFieldInvalid("first_name");
     }
@@ -575,12 +591,14 @@ export default function PaymentsPage() {
       );
     } else if (
       !form.data.user.street_address ||
-      (form.data.user.country === "US" && isStreetAddressPOBox(form.data.user.street_address))
+      (streetAddressValidationContextChanged &&
+        form.data.user.country !== null &&
+        isPhysicalAddressRequiredAndPOBox(cast(form.data.user.country), form.data.user.street_address))
     ) {
       markFieldInvalid("street_address");
       if (form.data.user.street_address) {
         setClientErrorMessage({
-          message: "We require a valid physical US address. We cannot accept a P.O. Box as a valid address.",
+          message: poBoxAddressErrorMessage(cast(form.data.user.country)),
         });
       }
     }
@@ -685,12 +703,14 @@ export default function PaymentsPage() {
         }
       } else if (
         !form.data.user.business_street_address ||
-        (form.data.user.business_country === "US" && isStreetAddressPOBox(form.data.user.business_street_address))
+        (businessStreetAddressValidationContextChanged &&
+          form.data.user.business_country !== null &&
+          isPhysicalAddressRequiredAndPOBox(cast(form.data.user.business_country), form.data.user.business_street_address))
       ) {
         markFieldInvalid("business_street_address");
         if (form.data.user.business_street_address) {
           setClientErrorMessage({
-            message: "We require a valid physical US address. We cannot accept a P.O. Box as a valid address.",
+            message: poBoxAddressErrorMessage(cast(form.data.user.business_country)),
           });
         }
       }
@@ -882,51 +902,11 @@ export default function PaymentsPage() {
         />
       ) : null}
       <form ref={formRef}>
-        {props.payouts_paused_by !== null ? (
-          <Alert className="m-4 md:m-8" role="status" variant="warning">
-            {props.payouts_paused_by === "stripe" ? (
-              <strong>
-                Your payouts are currently paused by our payment processor. Please check for any pending verification
-                requirements below.
-              </strong>
-            ) : props.payouts_paused_by === "admin" ? (
-              <strong>
-                Your payouts have been paused by Gumroad admin.
-                {props.payouts_paused_for_reason ? ` Reason for pause: ${props.payouts_paused_for_reason}` : null}
-              </strong>
-            ) : props.payouts_paused_by === "system" ? (
-              <strong>
-                Your payouts have been automatically paused for a security review and will be resumed once the review
-                completes.
-              </strong>
-            ) : (
-              <strong>You have paused your payouts.</strong>
-            )}
-          </Alert>
-        ) : null}
-
-        <FormSection header={<h2>Verification</h2>}>
-          {props.show_verification_section ? (
-            <StripeConnectEmbeddedNotificationBanner />
-          ) : (
-            <div className="flex flex-col">
-              <Alert role="status" variant="success">
-                Your identity has been verified!
-              </Alert>
-              <div className="mt-4 flex items-center">
-                <img src={logo} alt="Gum Coin" className="mr-2 h-5 w-5" />
-                <span className="text-sm text-muted">
-                  Creator since{" "}
-                  {new Date(props.user.joined_at).toLocaleDateString(userAgentInfo.locale, {
-                    month: "long",
-                    day: "numeric",
-                    year: "numeric",
-                  })}
-                </span>
-              </div>
-            </div>
-          )}
-        </FormSection>
+        <AccountStatusSection
+          accountStatus={props.account_status}
+          payoutsPausedBy={props.payouts_paused_by}
+          showVerificationSection={props.show_verification_section}
+        />
 
         {props.aus_backtax_details.show_au_backtax_prompt ? (
           <AusBackTaxesSection
@@ -1019,11 +999,11 @@ export default function PaymentsPage() {
               <WithTooltip
                 tip={
                   props.payouts_paused_by === "stripe"
-                    ? "Your payouts are currently paused by our payment processor. Please check for any pending verification requirements above."
+                    ? "Your payouts have been paused by Stripe."
                     : props.payouts_paused_by === "admin"
-                      ? `Your payouts have been paused by Gumroad admin.${props.payouts_paused_for_reason && ` Reason for pause: ${props.payouts_paused_for_reason}`}`
+                      ? "Your payouts have been paused by Gumroad."
                       : props.payouts_paused_by === "system"
-                        ? "Your payouts have been automatically paused for a security review and will be resumed once the review completes."
+                        ? "Your payouts have been paused for a security review."
                         : null
                 }
               >

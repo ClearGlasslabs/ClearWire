@@ -1,4 +1,4 @@
-import { Pencil, Shield, Trash } from "@boxicons/react";
+import { AlertShield, Pencil, Trash } from "@boxicons/react";
 import { useForm, usePage } from "@inertiajs/react";
 import * as React from "react";
 import { cast } from "ts-safe-cast";
@@ -12,6 +12,7 @@ import { Layout } from "$app/components/Collaborators/Layout";
 import { useLoggedInUser } from "$app/components/LoggedInUser";
 import { NavigationButtonInertia } from "$app/components/NavigationButton";
 import { showAlert } from "$app/components/server-components/Alert";
+import { Avatar } from "$app/components/ui/Avatar";
 import { Placeholder, PlaceholderImage } from "$app/components/ui/Placeholder";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "$app/components/ui/Table";
 import { WithTooltip } from "$app/components/WithTooltip";
@@ -87,19 +88,18 @@ const CollaboratorsPage = () => {
                   >
                     <TableCell>
                       <div className="flex items-center gap-4">
-                        <img
-                          className="user-avatar"
+                        <Avatar
                           src={collaborator.avatar_url}
                           style={{ width: "var(--spacer-6)" }}
                           alt={`Avatar of ${collaborator.name || "Collaborator"}`}
                         />
                         <div>
                           <span className="whitespace-nowrap">{collaborator.name || "Collaborator"}</span>
-                          <small className="line-clamp-1">{collaborator.email}</small>
+                          <small className="line-clamp-1 block">{collaborator.email}</small>
                         </div>
                         {collaborator.setup_incomplete ? (
                           <WithTooltip tip="Not receiving payouts" position="top">
-                            <Shield
+                            <AlertShield
                               pack="filled"
                               style={{ color: "rgb(var(--warning))" }}
                               aria-label="Not receiving payouts"

@@ -1,4 +1,3 @@
-import ProductSectionSchema from "$app/json_schemas/seller_profile_products_section";
 import { CurrencyCode } from "$app/utils/currency";
 import { RecurrenceId } from "$app/utils/recurringPricing";
 
@@ -56,6 +55,7 @@ export type CardProduct = {
 export type AnalyticsData = {
   google_analytics_id: string | null;
   facebook_pixel_id: string | null;
+  tiktok_pixel_id: string | null;
   free_sales: boolean;
 };
 
@@ -81,7 +81,14 @@ export const SORT_KEYS = [
   "price_desc",
 ] as const;
 export type SortKey = (typeof SORT_KEYS)[number];
-export const PROFILE_SORT_KEYS = ProductSectionSchema.properties.default_product_sort.enum;
+export const PROFILE_SORT_KEYS = [
+  "page_layout",
+  "newest",
+  "highest_rated",
+  "most_reviewed",
+  "price_asc",
+  "price_desc",
+] as const;
 export type ProfileSortKey = (typeof PROFILE_SORT_KEYS)[number];
 
 export const COMMISSION_DEPOSIT_PROPORTION = 0.5;

@@ -1,8 +1,7 @@
 import * as React from "react";
-import { cast, createCast } from "ts-safe-cast";
+import { cast } from "ts-safe-cast";
 
 import { assertResponseError, request, ResponseError } from "$app/utils/request";
-import { register } from "$app/utils/serverComponentUtil";
 
 import { Button } from "$app/components/Button";
 import { LoadingSpinner } from "$app/components/LoadingSpinner";
@@ -81,7 +80,6 @@ export const TaxesCollectionModal = ({ taxesOwed, creditCreationDate, name }: Pr
                 id={`${uid}optInFullName`}
                 type="text"
                 aria-invalid={error.length !== 0}
-                placeholder="Full name"
                 disabled={saving}
                 value={signature}
                 onChange={(e) => {
@@ -97,5 +95,3 @@ export const TaxesCollectionModal = ({ taxesOwed, creditCreationDate, name }: Pr
     </div>
   );
 };
-
-export default register({ component: TaxesCollectionModal, propParser: createCast() });

@@ -197,7 +197,6 @@ const CollaboratorForm = ({
                 id="email"
                 type="email"
                 value={form.data.email}
-                placeholder="Collaborator's Gumroad account email"
                 onChange={(evt) => {
                   form.setData("email", evt.target.value.trim());
                   form.clearErrors("email");
@@ -300,7 +299,7 @@ const CollaboratorForm = ({
                       <TableCell>
                         <Label htmlFor={`enable-product-${product.id}`}>{product.name}</Label>
                         {product.has_another_collaborator || product.has_affiliates ? (
-                          <small className="text-muted">
+                          <small className="block text-muted">
                             {product.has_another_collaborator
                               ? "Already has a collaborator"
                               : "Selecting this product will remove all its affiliates."}
