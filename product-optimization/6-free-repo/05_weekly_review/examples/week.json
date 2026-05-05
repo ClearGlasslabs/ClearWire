@@ -1,0 +1,28 @@
+{
+  "week_of": "2026-04-27",
+  "calendar": {
+    "total_meetings": 14,
+    "internal_review": 6,
+    "sales_calls": 2,
+    "client_work": 3,
+    "personal": 3
+  },
+  "email_sent": {
+    "count": 47,
+    "to_clients": 18,
+    "to_prospects": 4,
+    "to_vendors": 8,
+    "internal": 17
+  },
+  "github_commits": [
+    {"date": "2026-04-28", "repo": "claude-automations", "count": 11},
+    {"date": "2026-04-30", "repo": "claude-automations", "count": 4},
+    {"date": "2026-05-02", "repo": "client-acme", "count": 7}
+  ],
+  "stripe": {
+    "revenue_this_week": 4250,
+    "revenue_last_week": 6100,
+    "new_customers": 0
+  },
+  "notes_from_user": "Felt scattered. Didn't ship the assistant launch I planned for Friday."
+}

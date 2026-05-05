@@ -1,0 +1,20 @@
+[
+  {
+    "id": "msg_001",
+    "sender": "alex@bigco.com",
+    "subject": "Statement of work — final review",
+    "body": "Hi — attached is the SOW for the Q3 engagement, $48k total, 12-week scope. Need your sign-off by Friday so we can route it through procurement. Let me know if anything looks off."
+  },
+  {
+    "id": "msg_002",
+    "sender": "newsletter@somesaas.com",
+    "subject": "Your weekly digest",
+    "body": "5 articles you might enjoy this week..."
+  },
+  {
+    "id": "msg_003",
+    "sender": "priya@startupx.io",
+    "subject": "Re: invoice 0042",
+    "body": "Sorry for the delay — finance was offsite last week. Payment will go out Wednesday. Thanks for your patience."
+  }
+]

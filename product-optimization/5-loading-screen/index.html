@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ClearGlass · Initializing</title>
+<style>
+  :root {
+    --bg: #050507;
+    --red: #ff283c;
+    --red-soft: rgba(255, 40, 60, 0.6);
+    --red-glow: rgba(255, 40, 60, 0.45);
+    --line: rgba(255, 255, 255, 0.04);
+    --text: #d4d4d8;
+    --muted: #6b6b78;
+    --dim: #3f3f46;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .stage {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+
+  .grid {
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: 48px 48px;
+    opacity: 0.5;
+    -webkit-mask-image: radial-gradient(ellipse at center, black 40%, transparent 75%);
+            mask-image: radial-gradient(ellipse at center, black 40%, transparent 75%);
+  }
+
+  .scan {
+    position: absolute;
+    left: 0; right: 0;
+    height: 120px;
+    background: linear-gradient(to bottom, transparent, rgba(255,40,60,0.06), transparent);
+    animation: scan 6s linear infinite;
+    pointer-events: none;
+  }
+
+  .vignette {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.85) 100%);
+    pointer-events: none;
+  }
+
+  header, footer {
+    position: absolute;
+    left: 0; right: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1.25rem 2.5rem;
+    font-size: 10px;
+    letter-spacing: 0.35em;
+    color: var(--muted);
+    pointer-events: none;
+  }
+  header { top: 0; } footer { bottom: 0; }
+  header .brand, footer .status { color: var(--red); opacity: 0.9; }
+  .tags { display: flex; gap: 1.5rem; }
+
+  main {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .logo-wrap {
+    position: relative;
+    width: 14rem;
+    height: 14rem;
+  }
+  @media (max-width: 640px) {
+    .logo-wrap { width: 11rem; height: 11rem; }
+    .tags { display: none; }
+    header, footer { padding: 1rem 1.5rem; }
+  }
+
+  .ring-outer { position: absolute; inset: 0; animation: spin 24s linear infinite; }
+  .ring-inner { position: absolute; inset: 0.75rem; animation: spinR 36s linear infinite; }
+
+  .monogram {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 3rem;
+    font-weight: 300;
+    letter-spacing: 0.18em;
+    color: #fafafa;
+    text-shadow:
+      0 0 16px rgba(255,40,60,0.55),
+      0 0 2px rgba(255,255,255,0.4);
+    animation: flicker 3.2s ease-in-out infinite;
+  }
+
+  .label {
+    margin-top: 2.5rem;
+    text-align: center;
+    opacity: 0;
+    transform: translateY(8px);
+    animation: rise 0.8s 0.35s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  }
+  .label .init {
+    font-size: 10px;
+    letter-spacing: 0.6em;
+    color: var(--muted);
+  }
+  .label .title {
+    margin-top: 0.5rem;
+    font-size: 0.875rem;
+    letter-spacing: 0.25em;
+    color: #e5e5e5;
+  }
+
+  .progress {
+    margin-top: 2.5rem;
+    width: 24rem;
+    max-width: calc(100vw - 3rem);
+  }
+  .progress-track {
+    position: relative;
+    height: 1px;
+    background: #27272a;
+  }
+  .progress-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 0%;
+    background: var(--red);
+  }
+  .progress-dot {
+    position: absolute;
+    top: -2px;
+    left: 0;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--red);
+    box-shadow: 0 0 12px rgba(255,40,60,0.9);
+    transform: translateX(-2.5px);
+  }
+  .ticks {
+    margin-top: 0.5rem;
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+    letter-spacing: 0.4em;
+    color: var(--dim);
+  }
+
+  .meta {
+    margin-top: 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    font-size: 10px;
+    letter-spacing: 0.3em;
+    color: var(--muted);
+    height: 1rem;
+  }
+  .meta .pct { color: var(--red); font-variant-numeric: tabular-nums; }
+  .meta .sep { width: 1.5rem; height: 1px; background: #3f3f46; }
+  .meta .status-line { color: #a3a3a3; transition: opacity 0.4s; }
+
+  @keyframes spin   { to { transform: rotate(360deg); } }
+  @keyframes spinR  { to { transform: rotate(-360deg); } }
+  @keyframes scan   { 0% { transform: translateY(-10vh); } 100% { transform: translateY(110vh); } }
+  @keyframes flicker {
+    0%, 100% { opacity: 1; }
+    40% { opacity: 0.86; }
+    55% { opacity: 1; }
+    70% { opacity: 0.92; }
+  }
+  @keyframes rise {
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ring-outer, .ring-inner, .scan, .monogram { animation: none; }
+  }
+</style>
+</head>
+<body>
+<div class="stage" role="status" aria-live="polite" aria-label="ClearGlass initializing">
+  <div class="grid"></div>
+  <div class="scan"></div>
+  <div class="vignette"></div>
+
+  <header>
+    <span class="brand">CLEARGLASS</span>
+    <span class="tags">
+      <span>SYS-ID 7741</span>
+      <span>CLASSIFIED // INTERNAL</span>
+      <span>CHANNEL 04</span>
+    </span>
+    <time id="clock">--:--:-- UTC</time>
+  </header>
+
+  <main>
+    <div class="logo-wrap">
+      <div class="ring-outer">
+        <svg viewBox="0 0 200 200" width="100%" height="100%">
+          <defs>
+            <radialGradient id="hexGlow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="rgba(255,40,60,0.45)" />
+              <stop offset="60%" stop-color="rgba(255,40,60,0.08)" />
+              <stop offset="100%" stop-color="rgba(255,40,60,0)" />
+            </radialGradient>
+          </defs>
+          <circle cx="100" cy="100" r="92" fill="url(#hexGlow)" />
+          <polygon points="100,12 178,55 178,145 100,188 22,145 22,55"
+            fill="none" stroke="rgba(255,40,60,0.65)" stroke-width="1" />
+          <polygon points="100,28 165,62 165,138 100,172 35,138 35,62"
+            fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="1" />
+          <g stroke="rgba(255,40,60,0.08)" stroke-width="1">
+            <line x1="100" y1="100" x2="100" y2="8" />
+            <line x1="100" y1="100" x2="180" y2="54" />
+            <line x1="100" y1="100" x2="180" y2="146" />
+            <line x1="100" y1="100" x2="100" y2="192" />
+            <line x1="100" y1="100" x2="20" y2="146" />
+            <line x1="100" y1="100" x2="20" y2="54" />
+          </g>
+        </svg>
+      </div>
+      <div class="ring-inner">
+        <svg viewBox="0 0 200 200" width="100%" height="100%">
+          <circle cx="100" cy="100" r="78" fill="none"
+            stroke="rgba(255,255,255,0.05)" stroke-width="1" stroke-dasharray="2 6" />
+          <circle cx="100" cy="100" r="78" fill="none"
+            stroke="rgba(255,40,60,0.6)" stroke-width="1.2" stroke-dasharray="48 442" />
+        </svg>
+      </div>
+      <div class="monogram">CG</div>
+    </div>
+
+    <div class="label">
+      <div class="init">INITIALIZING</div>
+      <div class="title">SECURE INTELLIGENCE RUNTIME</div>
+    </div>
+
+    <div class="progress">
+      <div class="progress-track">
+        <div class="progress-fill" id="fill"></div>
+        <div class="progress-dot" id="dot"></div>
+      </div>
+      <div class="ticks"><span>00</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
+    </div>
+
+    <div class="meta">
+      <span class="pct" id="pct">000.0%</span>
+      <span class="sep"></span>
+      <span class="status-line" id="status">AUTH :: handshake</span>
+    </div>
+  </main>
+
+  <footer>
+    <span>NODE 04 / SECTOR 7</span>
+    <span class="tags"><span>ENC AES-256 · CHANNEL VERIFIED</span></span>
+    <span class="status">OPERATIONAL</span>
+  </footer>
+</div>
+
+<script>
+(function () {
+  const DURATION = 4200;
+  const STATUS = [
+    "AUTH :: handshake",
+    "KERNEL :: secure-boot",
+    "INTEL :: streams sync",
+    "OPS :: runtime ready",
+  ];
+
+  const fill = document.getElementById("fill");
+  const dot = document.getElementById("dot");
+  const pct = document.getElementById("pct");
+  const status = document.getElementById("status");
+  const clock = document.getElementById("clock");
+
+  const easeOutQuart = (t) => 1 - Math.pow(1 - t, 4);
+
+  const start = performance.now();
+  function tick(t) {
+    const e = Math.min((t - start) / DURATION, 1);
+    const v = easeOutQuart(e) * 100;
+    fill.style.width = v + "%";
+    dot.style.left = v + "%";
+    pct.textContent = v.toFixed(1).padStart(5, "0") + "%";
+    if (e < 1) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  let i = 0;
+  setInterval(() => {
+    i = (i + 1) % STATUS.length;
+    status.style.opacity = "0";
+    setTimeout(() => { status.textContent = STATUS[i]; status.style.opacity = "1"; }, 180);
+  }, 900);
+
+  function fmt() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    clock.textContent =
+      `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} UTC`;
+  }
+  fmt(); setInterval(fmt, 1000);
+})();
+</script>
+</body>
+</html>

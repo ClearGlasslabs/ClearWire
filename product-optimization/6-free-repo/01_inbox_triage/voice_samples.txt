@@ -1,0 +1,13 @@
+--- Sample 1 ---
+Hey Mark — yes, Tuesday at 10 works. I'll send a calendar invite. One
+thing: bring the latest schema doc, the one we couldn't open last
+week. Talk Tuesday.
+
+--- Sample 2 ---
+Hi Priya — short answer is no, the integration won't ship by Friday.
+The auth piece took longer than I scoped. Realistic ship is the 24th.
+Sorry for the slip.
+
+--- Sample 3 ---
+Quick one — invoice 0042 is overdue 11 days. Can you confirm a payment
+date this week? Happy to jump on a call if there's a blocker.
