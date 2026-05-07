@@ -1,0 +1,32 @@
+name: Site reliability
+
+# External-facing reliability checks (link rot, broken external links).
+# Runs on a schedule only — does NOT run on every push, which is what
+# was burning minutes in the old config.
+on:
+  schedule:
+    - cron: '0 12 * * 1'  # Weekly Monday noon UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write  # Only needed if you want this workflow to file issues on broken links
+
+concurrency:
+  group: site-reliability
+  cancel-in-progress: true
+
+jobs:
+  external-links:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lychee link check
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --verbose --no-progress --max-concurrency 4 './**/*.md' './**/*.html'
+          fail: false  # Don't fail the workflow — surface results in the summary
