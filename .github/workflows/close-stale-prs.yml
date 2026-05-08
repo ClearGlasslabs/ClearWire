@@ -5,9 +5,14 @@ on:
     - cron: "0 */6 * * *"
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   close-stale-prs:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       pull-requests: write
       issues: write
