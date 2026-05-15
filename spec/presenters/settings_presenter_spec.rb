@@ -590,6 +590,7 @@ describe SettingsPresenter do
         payout_country_name: nil,
         payout_frequency: User::PayoutSchedule::WEEKLY,
         payout_frequency_daily_supported: false,
+        can_manage_beneficial_owners: false,
       }
     end
 
@@ -1055,6 +1056,29 @@ describe SettingsPresenter do
         expect(presenter.payments_props[:payouts_paused_internally]).to be(false)
         expect(presenter.payments_props[:payouts_paused_by_user]).to be(false)
         expect(presenter.payments_props[:payouts_paused_by]).to eq(nil)
+      end
+    end
+  end
+
+  describe "#payments_props :can_manage_beneficial_owners gating" do
+    before do
+      create(:user_compliance_info_business, user: seller)
+      create(:merchant_account, user: seller, charge_processor_merchant_id: "acct_test_bo_gate")
+    end
+
+    it "exposes true for the owner of a business with a Gumroad-managed Stripe account" do
+      expect(presenter.payments_props[:can_manage_beneficial_owners]).to be(true)
+    end
+
+    context "when the logged-in user is an admin for the seller" do
+      let(:user) { create(:user) }
+
+      before do
+        create(:team_membership, user:, seller:, role: TeamMembership::ROLE_ADMIN)
+      end
+
+      it "exposes false so the section is hidden from team admins who lack :update? on payments" do
+        expect(presenter.payments_props[:can_manage_beneficial_owners]).to be(false)
       end
     end
   end
