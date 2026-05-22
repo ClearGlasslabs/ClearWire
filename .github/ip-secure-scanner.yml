@@ -1,0 +1,64 @@
+classification:
+  patterns:
+    - match: "README.md"
+      label: public
+    - match: "docs/**"
+      label: public
+    - match: "test/**"
+      label: internal
+    - match: "spec/**"
+      label: internal
+    - match: "app/**"
+      label: internal
+    - match: "lib/**"
+      label: internal
+    - match: "config/**"
+      label: internal
+    - match: "scripts/**"
+      label: internal
+    - match: "**/.env*"
+      label: confidential
+    - match: "**/*secret*"
+      label: confidential
+    - match: "**/*private*"
+      label: confidential
+    - match: "**/*credential*"
+      label: confidential
+    - match: "prompts/**"
+      label: trade-secret
+    - match: "model_data/**"
+      label: trade-secret
+    - match: "training/**"
+      label: trade-secret
+    - match: ".github/secret-patterns.toml"
+      label: confidential
+secret_detection:
+  severity: critical
+  custom_patterns_path: .github/secret-patterns.toml
+license:
+  required_headers: false
+  ignore_paths:
+    - "test/**"
+    - "spec/**"
+    - "vendor/**"
+    - "node_modules/**"
+    - "tmp/**"
+  allowed_licenses:
+    - MIT
+    - Apache-2.0
+    - BSD-2-Clause
+    - BSD-3-Clause
+    - ISC
+dependencies:
+  verify: true
+  package_managers:
+    - npm
+    - bundler
+  allow_private_sources: true
+  suspicious_age_days: 14
+output:
+  log_format: json
+  fail_on:
+    - secret
+    - unresolvable_dependency
+    - suspicious_dependency
