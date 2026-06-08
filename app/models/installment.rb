@@ -271,11 +271,17 @@ class Installment < ApplicationRecord
     seller.presence || link.user
   end
 
-  def installment_mobile_json_data(purchase: nil, subscription: nil, imported_customer: nil, follower: nil)
+  def installment_mobile_json_data(purchase: nil, subscription: nil, imported_customer: nil, follower: nil,
+                                   preloaded_purchase_url_redirect: :not_preloaded,
+                                   preloaded_purchase_email_info: :not_preloaded)
     installment_url_redirect = if subscription.present?
       url_redirect(subscription) || generate_url_redirect_for_subscription(subscription)
     elsif purchase.present?
-      purchase_url_redirect(purchase) || generate_url_redirect_for_purchase(purchase)
+      if preloaded_purchase_url_redirect != :not_preloaded
+        preloaded_purchase_url_redirect || generate_url_redirect_for_purchase(purchase)
+      else
+        purchase_url_redirect(purchase) || generate_url_redirect_for_purchase(purchase)
+      end
     elsif imported_customer.present?
       imported_customer_url_redirect(imported_customer) || generate_url_redirect_for_imported_customer(imported_customer)
     elsif follower.present?
@@ -287,7 +293,11 @@ class Installment < ApplicationRecord
       installment_url_redirect.mobile_product_file_json_data(product_file)
     end
     released_at = if purchase.present?
-      action_at_for_purchase(purchase.original_purchase)
+      if preloaded_purchase_email_info != :not_preloaded
+        action_at_from_email_info(preloaded_purchase_email_info)
+      else
+        action_at_for_purchase(purchase.original_purchase)
+      end
     elsif subscription.present?
       action_at_for_purchase(subscription.original_purchase)
     end
@@ -662,6 +672,61 @@ class Installment < ApplicationRecord
     end
   end
 
+  # Purchase ids of recipients this post was emailed to, backed by the open-tracking
+  # CreatorContactingCustomersEmailInfo rows that are created when a post email is sent.
+  def emailed_recipient_purchase_ids
+    email_infos.where.not(purchase_id: nil).distinct.pluck(:purchase_id)
+  end
+
+  # Purchase ids of recipients who have opened this post's email at least once.
+  def opened_recipient_purchase_ids
+    email_infos.where(state: "opened").where.not(purchase_id: nil).distinct.pluck(:purchase_id)
+  end
+
+  # Purchase ids of original recipients who have not opened this post's email yet.
+  # Only purchase-backed posts (customer/seller/product/variant) have per-recipient open
+  # linkage, so this returns an empty array for follower/affiliate posts.
+  def unopened_recipient_purchase_ids
+    return [] unless seller_or_product_or_variant_type?
+    emailed_recipient_purchase_ids - opened_recipient_purchase_ids
+  end
+
+  # Emails of original recipients who haven't opened. Matching on email (rather than
+  # purchase_id) is the right key because AudienceMember collapses a buyer's multiple
+  # purchases into one row keyed by (seller_id, email), so the email_info purchase
+  # may not match the audience row's max(purchase_id).
+  def unopened_recipient_emails
+    return [] unless seller_or_product_or_variant_type?
+
+    emailed_ids = emailed_recipient_purchase_ids
+    return [] if emailed_ids.empty?
+
+    emailed_emails = Purchase.where(id: emailed_ids).distinct.pluck(:email).compact.map(&:downcase)
+    opened_emails = Purchase.where(id: opened_recipient_purchase_ids).distinct.pluck(:email).compact.map(&:downcase)
+    emailed_emails - opened_emails
+  end
+
+  def resendable_to_non_openers_emails
+    candidates = unopened_recipient_emails.to_set
+    return [] if candidates.empty?
+
+    AudienceMember
+      .filter(seller_id:, params: audience_members_filter_params)
+      .pluck(:email)
+      .map(&:downcase)
+      .uniq
+      .select { candidates.include?(_1) }
+  end
+
+  def unopened_recipients_count
+    resendable_to_non_openers_emails.size
+  end
+
+  # Whether a "resend to non-openers" blast is applicable to this post.
+  def resendable_to_non_openers?
+    published? && send_emails? && seller_or_product_or_variant_type?
+  end
+
   def unique_click_count
     Rails.cache.fetch(key_for_cache(:unique_click_count)) do
       summary = CreatorEmailClickSummary.where(installment_id: id).last
@@ -705,6 +770,10 @@ class Installment < ApplicationRecord
 
   def action_at_for_purchases(purchase_ids)
     email_info = CreatorContactingCustomersEmailInfo.where(installment_id: id, purchase_id: purchase_ids).last
+    action_at_from_email_info(email_info)
+  end
+
+  def action_at_from_email_info(email_info)
     action_at = email_info.present? ? email_info.sent_at || email_info.delivered_at || email_info.opened_at : published_at
     action_at || Time.current
   end
@@ -768,8 +837,12 @@ class Installment < ApplicationRecord
     params[:not_bought_variant_ids] = not_bought_variants&.map { ObfuscateIds.decrypt(_1) }
     params[:paid_more_than_cents] = paid_more_than_cents.presence
     params[:paid_less_than_cents] = paid_less_than_cents.presence
-    params[:created_after] = Date.parse(created_after.to_s).in_time_zone(seller.timezone).iso8601 if created_after.present?
-    params[:created_before] = Date.parse(created_before.to_s).in_time_zone(seller.timezone).end_of_day.iso8601 if created_before.present?
+    if (date = safe_parse_filter_date(created_after))
+      params[:created_after] = date.in_time_zone(seller.timezone).iso8601
+    end
+    if (date = safe_parse_filter_date(created_before))
+      params[:created_before] = date.in_time_zone(seller.timezone).end_of_day.iso8601
+    end
     params[:bought_from] = bought_from if bought_from.present?
     params[:affiliate_product_ids] = seller.products.where(unique_permalink: affiliate_products).ids if affiliate_products.present?
 
@@ -805,7 +878,7 @@ class Installment < ApplicationRecord
     end.reverse
   end
 
-  def has_been_blasted? = blasts.exists?
+  def has_been_blasted? = blasts.loaded? ? blasts.any? : blasts.exists?
   def can_be_blasted? = send_emails? && !has_been_blasted?
 
   def featured_image_url

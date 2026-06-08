@@ -1,4 +1,4 @@
-import { cast } from "ts-safe-cast";
+import typia from "typia";
 
 import { ProfileSettings, Tab } from "$app/parsers/profile";
 import { request, ResponseError } from "$app/utils/request";
@@ -59,7 +59,7 @@ export const updateProfileSettings = async (profileSettings: Partial<ProfileSett
       tabs,
     },
   });
-  const json = cast<{ success: false; error_message: string } | { success: true }>(await response.json());
+  const json = typia.assert<{ success: false; error_message: string } | { success: true }>(await response.json());
   if (!json.success) throw new ResponseError(json.error_message);
 };
 
@@ -70,5 +70,15 @@ export const getProduct = async (id: string) => {
     accept: "json",
   });
   if (!response.ok) throw new ResponseError();
-  return cast<ProductProps>(await response.json());
+  return typia.assert<ProductProps>(await response.json());
+};
+
+export const unlinkTwitter = async () => {
+  const response = await request({
+    method: "POST",
+    url: Routes.unlink_twitter_settings_connections_path(),
+    accept: "json",
+  });
+  const json = typia.assert<{ success: false; error_message: string } | { success: true }>(await response.json());
+  if (!json.success) throw new ResponseError(json.error_message);
 };

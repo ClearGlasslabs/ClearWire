@@ -2,15 +2,20 @@
 
 class Api::Internal::Admin::PurchasesController < Api::Internal::Admin::BaseController
   include CurrencyHelper
+  include Api::Internal::Admin::CursorPaginated
 
   MAX_SEARCH_RESULTS = 25
   VALID_PURCHASE_STATUSES = %w[successful failed not_charged chargeback refunded].freeze
+  LOOKUP_FIELDS = %w[stripe_fingerprint browser_guid ip_address].freeze
+  private_constant :LOOKUP_FIELDS
 
   def show
     purchase = fetch_purchase
     return render json: { success: false, message: "Purchase not found" }, status: :not_found if purchase.blank?
 
-    render json: { success: true, purchase: serialize_purchase(purchase) }
+    ActiveRecord::Associations::Preloader.new(records: [purchase], associations: ADMIN_PURCHASE_INCLUDES).call
+    risk_level = Radar::ChargeRiskLevelService.fetch(purchase)
+    render json: { success: true, purchase: serialize_purchase(purchase, with_clusters: true, stripe_risk_level: risk_level) }
   end
 
   def search
@@ -27,18 +32,35 @@ class Api::Internal::Admin::PurchasesController < Api::Internal::Admin::BaseCont
     end
 
     limit = purchase_search_limit
-    purchases = AdminSearchService.new.search_purchases(**search_params, limit: limit.next).includes(:link, :seller, :refunds).to_a
+    purchases = AdminSearchService.new.search_purchases(**search_params, limit: limit.next).includes(*ADMIN_PURCHASE_INCLUDES).to_a
     has_more = purchases.length > limit
 
     render json: {
       success: true,
-      purchases: purchases.first(limit).map { serialize_purchase(_1) },
+      purchases: serialize_purchases_with_risk_levels(purchases.first(limit)),
       count: [purchases.length, limit].min,
       limit:,
       has_more:
     }
   rescue AdminSearchService::InvalidDateError
     render json: { success: false, message: "purchase_date must use YYYY-MM-DD format." }, status: :bad_request
+  end
+
+  def lookup
+    lookup = parse_lookup_params
+    return if lookup.nil?
+
+    records, pagination = paginate_with_cursor(
+      Purchase.where(lookup[:field] => lookup[:value]).includes(*ADMIN_PURCHASE_INCLUDES),
+      order: [[:created_at, :desc], [:id, :desc]]
+    )
+
+    render json: {
+      success: true,
+      lookup:,
+      purchases: serialize_purchases_with_risk_levels(records),
+      pagination:,
+    }
   end
 
   def resend_receipt
@@ -326,6 +348,22 @@ class Api::Internal::Admin::PurchasesController < Api::Internal::Admin::BaseCont
       end
 
       purchase
+    end
+
+    def parse_lookup_params
+      present = LOOKUP_FIELDS.select { |field| params[field].to_s.strip.present? }
+      if present.empty?
+        render json: { success: false, message: "stripe_fingerprint, browser_guid, or ip_address is required" }, status: :bad_request
+        return nil
+      end
+
+      if present.size > 1
+        render json: { success: false, message: "only one of stripe_fingerprint, browser_guid, ip_address is allowed" }, status: :bad_request
+        return nil
+      end
+
+      field = present.first
+      { field:, value: params[field].to_s.strip }
     end
 
     def fetch_purchase

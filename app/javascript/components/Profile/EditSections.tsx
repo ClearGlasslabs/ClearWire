@@ -18,7 +18,7 @@ import { EditorContent } from "@tiptap/react";
 import { debounce, isEqual, sortBy } from "lodash-es";
 import * as React from "react";
 import { ReactSortable as Sortable } from "react-sortablejs";
-import { cast } from "ts-safe-cast";
+import typia from "typia";
 
 import {
   Section as BaseSection,
@@ -97,7 +97,7 @@ const useSaveSection = (initialSection: Section) => {
         data: section,
         accept: "json",
       });
-      if (!response.ok) throw new ResponseError(cast<{ error: string }>(await response.json()).error);
+      if (!response.ok) throw new ResponseError(typia.assert<{ error: string }>(await response.json()).error);
       showAlert("Changes saved!", "success");
       setSavedSection(section);
     } catch (e) {
@@ -131,7 +131,7 @@ export const useSectionImageUploadSettings = () => {
                 url: Routes.s3_utility_cdn_url_for_blob_path({ key: blob.key }),
               })
                 .then((response) => response.json())
-                .then((data) => resolve(cast<{ url: string }>(data).url))
+                .then((data) => resolve(typia.assert<{ url: string }>(data).url))
                 .catch((e: unknown) => {
                   assertResponseError(e);
                   reject(e);
@@ -452,6 +452,7 @@ const ProductsSectionView = ({ section }: { section: ProductsSection }) => {
     [JSON.stringify(section.shown_products), section.default_product_sort],
   );
   const selectedProductsCount = state.products.filter((product) => section.shown_products.includes(product.id)).length;
+  const totalProductsCount = state.products.length;
 
   return (
     <SectionLayout
@@ -460,7 +461,7 @@ const ProductsSectionView = ({ section }: { section: ProductsSection }) => {
         <EditorSubmenu
           key="0"
           heading="Products"
-          text={`${selectedProductsCount} ${selectedProductsCount === 1 ? "product" : "products"}`}
+          text={`${selectedProductsCount}/${totalProductsCount} ${totalProductsCount === 1 ? "product" : "products"}`}
         >
           <ProductsSettings section={section} />
         </EditorSubmenu>,
@@ -672,8 +673,8 @@ export const AddSectionButton = ({ side, index }: { index: number; side?: "top" 
           accept: "json",
         });
         const json: unknown = await response.json();
-        if (!response.ok) throw new ResponseError(cast<{ error: string }>(json).error);
-        const { id } = cast<{ id: string }>(json);
+        if (!response.ok) throw new ResponseError(typia.assert<{ error: string }>(json).error);
+        const { id } = typia.assert<{ id: string }>(json);
         return { ...section, id };
       } catch (e) {
         if (e instanceof ResponseError) showAlert(e.message, "error");

@@ -1301,7 +1301,7 @@ describe User, :vcr do
     describe "#resized_avatar_url" do
       context "when user doesn't have an avatar" do
         it "returns URL to default avatar" do
-          expect(@user.resized_avatar_url(size: 256)).to eq(ActionController::Base.helpers.asset_url("gumroad-default-avatar-5.png"))
+          expect(@user.resized_avatar_url(size: 256)).to eq(ActionController::Base.helpers.image_url("gumroad-default-avatar-5.png"))
         end
       end
 
@@ -1321,7 +1321,7 @@ describe User, :vcr do
           allow(@user.avatar).to receive(:attached?).and_return(true)
           allow(@user.avatar).to receive(:variant).and_raise(ActiveStorage::FileNotFoundError)
 
-          expect(@user.resized_avatar_url(size: 256)).to eq(ActionController::Base.helpers.asset_url("gumroad-default-avatar-5.png"))
+          expect(@user.resized_avatar_url(size: 256)).to eq(ActionController::Base.helpers.image_url("gumroad-default-avatar-5.png"))
         end
       end
 
@@ -1330,7 +1330,18 @@ describe User, :vcr do
           allow(@user.avatar).to receive(:attached?).and_return(true)
           allow(@user.avatar).to receive(:variant).and_raise(Errno::ENOENT, "/tmp/image_processing.png")
 
-          expect(@user.resized_avatar_url(size: 256)).to eq(ActionController::Base.helpers.asset_url("gumroad-default-avatar-5.png"))
+          expect(@user.resized_avatar_url(size: 256)).to eq(ActionController::Base.helpers.image_url("gumroad-default-avatar-5.png"))
+        end
+      end
+
+      context "when avatar blob is deleted but attachment record still exists" do
+        it "returns URL to default avatar" do
+          allow(@user.avatar).to receive(:attached?).and_return(true)
+          allow(@user.avatar).to receive(:variant).and_raise(
+            ActiveRecord::InvalidForeignKey.new("Mysql2::Error: Cannot add or update a child row: a foreign key constraint fails")
+          )
+
+          expect(@user.resized_avatar_url(size: 256)).to eq(ActionController::Base.helpers.image_url("gumroad-default-avatar-5.png"))
         end
       end
     end
@@ -1343,7 +1354,7 @@ describe User, :vcr do
 
       context "when user doesn't have an avatar" do
         it "returns URL to default avatar" do
-          expect(@user.avatar_url).to eq(ActionController::Base.helpers.asset_url("gumroad-default-avatar-5.png"))
+          expect(@user.avatar_url).to eq(ActionController::Base.helpers.image_url("gumroad-default-avatar-5.png"))
         end
       end
 
@@ -1410,7 +1421,7 @@ describe User, :vcr do
     describe "account_created_email_domain_is_not_blocked validation" do
       context "when the email domain is blocked" do
         before do
-          BlockedObject.block!(BLOCKED_OBJECT_TYPES[:email_domain], "example.com", nil)
+          PlatformBlock.add!(object_type: PlatformBlock::TYPES[:email_domain], object_value: "example.com")
         end
 
         it "fails the validation" do
@@ -1422,13 +1433,13 @@ describe User, :vcr do
         end
 
         after do
-          BlockedObject.find_active_object("example.com").unblock!
+          PlatformBlock.active.find_by(object_value: "example.com").unblock!
         end
       end
 
       context "when the email domain is not blocked" do
         it "validates the user successfully" do
-          expect(BlockedObject.find_active_object("example.com")).to be_nil
+          expect(PlatformBlock.active.find_by(object_value: "example.com")).to be_nil
           @user.account_created_ip = "example.com"
 
           expect(@user).to be_valid
@@ -1447,7 +1458,7 @@ describe User, :vcr do
     describe "account_created_ip" do
       context "when the IP is blocked" do
         before do
-          BlockedObject.block!(BLOCKED_OBJECT_TYPES[:ip_address], "127.0.0.1", nil, expires_in: 1.hour)
+          PlatformBlock.add!(object_type: PlatformBlock::TYPES[:ip_address], object_value: "127.0.0.1", expires_in: 1.hour)
         end
 
         it "fails the validation" do
@@ -1459,7 +1470,7 @@ describe User, :vcr do
         end
 
         after do
-          BlockedObject.find_active_object("127.0.0.1").unblock!
+          PlatformBlock.active.find_by(object_value: "127.0.0.1").unblock!
         end
       end
 
@@ -2758,6 +2769,38 @@ describe User, :vcr do
          .and change { active_access_token_two.reload.revoked_at }.from(nil).to(DateTime.current)
 
         expect(active_access_token_of_another_user.reload.revoked_at).to be_nil
+      end
+    end
+
+    it "denies approved device authorizations for the mobile application" do
+      device_authorization = create(
+        :oauth_device_authorization,
+        oauth_application:,
+        resource_owner: user,
+        status: OauthDeviceAuthorization::STATUS_APPROVED
+      )
+
+      user.invalidate_active_sessions!
+
+      expect(device_authorization.reload).to have_attributes(
+        status: OauthDeviceAuthorization::STATUS_DENIED,
+        denied_at: be_present,
+        access_token: nil
+      )
+    end
+  end
+
+  describe "#invalidate_browser_sessions!" do
+    let(:user) { create(:user) }
+    let(:oauth_application) { create(:oauth_application, uid: OauthApplication::MOBILE_API_OAUTH_APPLICATION_UID) }
+    let!(:active_access_token) { create("doorkeeper/access_token", application: oauth_application, resource_owner_id: user.id, scopes: "mobile_api") }
+
+    it "updates the timestamp without revoking mobile access tokens" do
+      travel_to(DateTime.current) do
+        expect do
+          user.invalidate_browser_sessions!
+        end.to change { user.reload.last_active_sessions_invalidated_at }.from(nil).to(DateTime.current)
+         .and not_change { active_access_token.reload.revoked_at }
       end
     end
   end

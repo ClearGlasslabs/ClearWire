@@ -2,7 +2,7 @@
 
 class Api::V2::SalesController < Api::V2::BaseController
   include CurrencyHelper
-  before_action(only: [:index, :show]) { doorkeeper_authorize! :view_sales }
+  before_action(only: [:index, :show, :export, :summary]) { doorkeeper_authorize! :view_sales }
   before_action(only: [:mark_as_shipped]) { doorkeeper_authorize! :mark_sales_as_shipped }
   before_action(only: [:refund]) { doorkeeper_authorize! :refund_sales, :edit_sales }
   before_action(only: [:resend_receipt]) { doorkeeper_authorize! :edit_sales }
@@ -88,6 +88,26 @@ class Api::V2::SalesController < Api::V2::BaseController
     purchase ? success_with_sale(purchase.as_json(version: 2)) : error_with_sale
   end
 
+  def export
+    filters = export_filters
+    return if performed?
+
+    Exports::PurchaseExportService.export(
+      seller: current_resource_owner,
+      recipient: current_resource_owner,
+      filters:,
+      force_async: true
+    )
+    render_response(true, status: "queued", recipient_email: current_resource_owner.email)
+  end
+
+  def summary
+    summary_params = sales_summary_params
+    return if performed?
+
+    render_response(true, Api::V2::SalesSummary.new(seller: current_resource_owner, **summary_params))
+  end
+
   def mark_as_shipped
     purchase = current_resource_owner.sales.find_by_external_id(params[:id])
 
@@ -150,6 +170,60 @@ class Api::V2::SalesController < Api::V2::BaseController
       sales = sales.where("full_name LIKE ?", "%#{Purchase.sanitize_sql_like(name)}%") if name.present?
       sales = sales.where(id: License.where(serial: license_key.upcase).select(:purchase_id)) if license_key.present?
       sales.order(created_at: :desc, id: :desc)
+    end
+
+    def export_filters
+      filters = {}
+      if params[:from].present?
+        filters[:start_time] = parse_export_date_param(:from)
+        return filters if performed?
+      end
+      if params[:to].present?
+        filters[:end_time] = parse_export_date_param(:to)
+        return filters if performed?
+      end
+
+      if params[:product_id].present?
+        product = current_resource_owner.links.find_by_external_id(params[:product_id])
+        return error_400("Invalid product ID.") if product.nil?
+
+        filters[:product_ids] = [product.external_id]
+      end
+
+      filters
+    end
+
+    def parse_export_date_param(param)
+      Date.strptime(params[param], "%Y-%m-%d")
+      params[param]
+    rescue ArgumentError
+      error_400("Invalid date format provided in field '#{param}'. Dates must be in the format YYYY-MM-DD.")
+    end
+
+    def sales_summary_params
+      group_by = params[:group_by].presence
+      if group_by.present? && Api::V2::SalesSummary::VALID_GROUPS.exclude?(group_by)
+        return error_400("Invalid group_by. Valid values are: #{Api::V2::SalesSummary::VALID_GROUPS.join(', ')}.")
+      end
+
+      from = parse_summary_date_param(:from) if params[:from].present?
+      return if performed?
+
+      to = params[:to].present? ? parse_summary_date_param(:to) : ActiveSupport::TimeZone[current_resource_owner.timezone].today
+      return if performed?
+
+      from ||= to - 29
+
+      return error_400("'from' must be on or before 'to'.") if from > to
+      return error_400("Date range cannot exceed #{AnalyticsController::MAX_DATE_RANGE_DAYS} days.") if (to - from).to_i > AnalyticsController::MAX_DATE_RANGE_DAYS
+
+      { from:, to:, group_by: }
+    end
+
+    def parse_summary_date_param(param)
+      Date.strptime(params[param], "%Y-%m-%d")
+    rescue ArgumentError
+      error_400("Invalid date format provided in field '#{param}'. Dates must be in the format YYYY-MM-DD.")
     end
 
     def set_page # DEPRECATED

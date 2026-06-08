@@ -1,9 +1,9 @@
 import { Trash } from "@boxicons/react";
 import { router } from "@inertiajs/react";
 import { DirectUpload } from "@rails/activestorage";
-import placeholderAppIcon from "images/gumroad_app.png";
+import placeholderAppIcon from "$assets/images/gumroad_app.png";
 import * as React from "react";
-import { cast } from "ts-safe-cast";
+import typia from "typia";
 
 import FileUtils from "$app/utils/file";
 import { getImageDimensionsFromFile } from "$app/utils/image";
@@ -239,7 +239,7 @@ const ApplicationForm = ({ application }: { application?: Application }) => {
                       method: "POST",
                       accept: "json",
                     });
-                    const responseData = cast<{ success: true; token: string } | { success: false; message: string }>(
+                    const responseData = typia.assert<{ success: true; token: string } | { success: false; message: string }>(
                       await response.json(),
                     );
                     if (!responseData.success) throw new ResponseError(responseData.message);

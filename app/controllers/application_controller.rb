@@ -14,7 +14,6 @@ class ApplicationController < ActionController::Base
   include TwoFactorAuthenticationValidator
   include Impersonate
   include CurrentSeller
-  include HelperWidget
   include UtmLinkTracking
   include RackMiniProfilerAuthorization
   include InertiaRendering
@@ -33,7 +32,7 @@ class ApplicationController < ActionController::Base
   before_action :redirect_to_custom_subdomain
 
   before_action :set_signup_referrer, if: -> { logged_in_user.nil? }
-  before_action :check_suspended, if: -> { logged_in_user.present? && logged_in_user.suspended? && !request.get? && !request.head? }
+  before_action :check_suspended, if: -> { logged_in_user.present? && logged_in_user.suspended? && !impersonating? && !request.get? && !request.head? }
 
   before_action :set_gumroad_guid
 
@@ -373,10 +372,14 @@ class ApplicationController < ActionController::Base
       Affiliate.valid_for_product(product).find_by_external_id_numeric(affiliate_id)
     end
 
-    def invalidate_active_sessions_except_the_current_session!
+    def invalidate_active_sessions_except_the_current_session!(revoke_mobile_tokens: true)
       return unless user_signed_in?
 
-      logged_in_user.invalidate_active_sessions!
+      if revoke_mobile_tokens
+        logged_in_user.invalidate_active_sessions!
+      else
+        logged_in_user.invalidate_browser_sessions!
+      end
 
       # NOTE: To keep the current session active, we reset the
       # "last_sign_in_at" value persisted in the current session with

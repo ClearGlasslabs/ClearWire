@@ -21,6 +21,23 @@ describe Link, :vcr do
     expect(subject.send(:single_unit_currency?)).to be(false)
   end
 
+  describe "#custom_html=" do
+    it "clears the page HTML without marking the associated page for destruction" do
+      link.update!(custom_html: "<section>Live landing page</section>")
+      page = link.reload.page
+
+      link.custom_html = nil
+
+      expect(link.page).to eq(page)
+      expect(link.page).not_to be_marked_for_destruction
+
+      link.save!
+
+      expect(link.reload.page).to eq(page)
+      expect(link.custom_html).to be_nil
+    end
+  end
+
   describe "max_purchase_count validations" do
     it "can be set on new records with no purchases" do
       expect(build(:product, max_purchase_count: nil).valid?).to eq(true)
@@ -47,6 +64,16 @@ describe Link, :vcr do
     it "allows it to be set on new records with no purchases" do
       expect(build(:product, max_purchase_count: 100).valid?).to eq(true)
     end
+
+    context "when sales_count_for_inventory returns nil" do
+      it "treats nil as 0 instead of raising ArgumentError on max_purchase_count change" do
+        product = create(:product, max_purchase_count: 100)
+        allow(product).to receive(:sales_count_for_inventory).and_return(nil)
+        product.max_purchase_count = 50
+        expect { product.valid? }.not_to raise_error
+        expect(product).to be_valid
+      end
+    end
   end
 
   it "allows > $1000 links for verified users" do
@@ -70,9 +97,9 @@ describe Link, :vcr do
     end
 
     it "fails if price exceeds the maximum storable value" do
-      expect {
+      expect do
         build(:product, user: create(:user, verified: true), price_cents: 2_147_483_648)
-      }.to raise_error(Link::LinkInvalid, "Sorry, the price entered is too large.")
+      end.to raise_error(Link::LinkInvalid, "Sorry, the price entered is too large.")
     end
 
     it "fails if price is too low" do
@@ -626,6 +653,37 @@ describe Link, :vcr do
 
           product.update!(purchase_type: :buy_and_rent)
         end
+      end
+    end
+
+    describe "#rental" do
+      it "returns nil for a buy-only product" do
+        product = create(:product, purchase_type: :buy_only)
+        expect(product.rental).to be_nil
+      end
+
+      it "returns the price and rent_only flag for a rent-only product" do
+        product = create(:product, purchase_type: :rent_only, rental_price_cents: 300)
+        expect(product.rental).to eq(price_cents: 300, rent_only: true)
+      end
+
+      it "returns the price and rent_only flag for a buy-and-rent product" do
+        product = create(:product, purchase_type: :buy_and_rent, rental_price_cents: 200)
+        expect(product.rental).to eq(price_cents: 200, rent_only: false)
+      end
+
+      it "returns nil for a buy-and-rent product with no rental price" do
+        product = create(:product, purchase_type: :buy_and_rent, rental_price_cents: 200)
+        product.prices.alive.is_rental.each(&:mark_deleted!)
+
+        expect(product.reload.rental).to be_nil
+      end
+
+      it "returns nil for a rent-only product with no rental price" do
+        product = create(:product, purchase_type: :rent_only, rental_price_cents: 300)
+        product.prices.alive.is_rental.each(&:mark_deleted!)
+
+        expect(product.reload.rental).to be_nil
       end
     end
 
@@ -2065,6 +2123,24 @@ describe Link, :vcr do
     end
   end
 
+  describe "#price_currency_type=" do
+    it "downcases the currency type" do
+      subject.price_currency_type = "USD"
+      expect(subject.price_currency_type).to eq("usd")
+    end
+
+    it "handles symbol input" do
+      subject.price_currency_type = :GBP
+      expect(subject.price_currency_type).to eq("gbp")
+    end
+
+    it "allows clean_price to work with uppercase currency input" do
+      product = create(:product, price_currency_type: "USD", price_cents: 100)
+      product.price_range = "12"
+      expect(product.price_cents).to eq(1200)
+    end
+  end
+
   describe "#remaining_for_sale_count" do
     it "defaults to nil" do
       expect(link.max_purchase_count).to be(nil)
@@ -2129,6 +2205,15 @@ describe Link, :vcr do
         expect(bundle.remaining_for_sale_count).to eq(2)
         bundle.bundle_products.second.mark_deleted!
         expect(bundle.remaining_for_sale_count).to eq(3)
+      end
+    end
+
+    describe "when sales_count_for_inventory returns nil" do
+      it "treats nil as 0 instead of raising TypeError" do
+        link.update!(max_purchase_count: 100)
+        allow(link).to receive(:sales_count_for_inventory).and_return(nil)
+        expect { link.remaining_for_sale_count }.not_to raise_error
+        expect(link.remaining_for_sale_count).to eq(100)
       end
     end
   end
@@ -2236,6 +2321,17 @@ describe Link, :vcr do
 
         expect(product.default_price).to eq yearly_price
       end
+    end
+  end
+
+  describe "#validate_product_price_against_all_offer_codes?" do
+    it "uses tiered discount amounts across membership tier prices" do
+      product = create(:membership_product_with_preset_tiered_pricing)
+      create(:tiered_offer_code, products: [product], user: product.user)
+      product.tiers.first.prices.alive.is_buy.first.update!(price_cents: 1_50)
+
+      expect(product.validate_product_price_against_all_offer_codes?).to eq(false)
+      expect(product.errors.full_messages).to include("An existing discount code puts the price of this product below the $0.99 minimum after discount.")
     end
   end
 
@@ -2550,8 +2646,8 @@ describe Link, :vcr do
       expect(build(:product).compliance_blocked(ip)).to be(false)
     end
 
-    it "blocks ips from 'bad' countries, like Libya" do
-      ip = "41.208.70.70" # Tripoly Libya Telecom
+    it "blocks ips from 'bad' countries, like Iran" do
+      ip = "2.144.0.1" # MCI Iran
       expect(build(:product).compliance_blocked(ip)).to be(true)
     end
 
@@ -2620,7 +2716,7 @@ describe Link, :vcr do
     context "when the product doesn't have a thumbnail" do
       it "returns product type thumbnail" do
         expect(product.for_email_thumbnail_url).to eq(
-          ActionController::Base.helpers.asset_url("native_types/thumbnails/digital.png")
+          ActionController::Base.helpers.image_url("native_types/thumbnails/digital.png")
         )
       end
     end
@@ -2645,7 +2741,7 @@ describe Link, :vcr do
 
         it "returns product type thumbnail" do
           expect(product.for_email_thumbnail_url).to eq(
-            ActionController::Base.helpers.asset_url("native_types/thumbnails/digital.png")
+            ActionController::Base.helpers.image_url("native_types/thumbnails/digital.png")
           )
         end
       end
@@ -3852,6 +3948,22 @@ describe Link, :vcr do
 
       it "adds protocol to the urls" do
         expect(product.html_safe_description).to eq("<iframe src=\"http://cdn.iframe.ly\"></iframe><img src=\"http://example.com/image.jpg\">")
+      end
+    end
+
+    context "when description contains an iframely.net iframe" do
+      let(:product) { create(:product, description: "<iframe src=\"https://iframely.net/api/iframe?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DzumvXpa7kGY&key=31708e31\" allowfullscreen></iframe>") }
+
+      it "keeps the iframe" do
+        expect(product.html_safe_description).to include("iframely.net/api/iframe")
+      end
+    end
+
+    context "when description contains an iframe from an untrusted host" do
+      let(:product) { create(:product, description: "before<iframe src=\"https://evil.example.com/embed\"></iframe>after") }
+
+      it "removes the iframe" do
+        expect(product.html_safe_description).to eq("beforeafter")
       end
     end
 

@@ -7,7 +7,7 @@ class User < ApplicationRecord
   has_paper_trail
   has_one_time_password
   include Flipper::Identifier, FlagShihTzu, CurrencyHelper, JsonData, Deletable, MoneyBalance,
-          DeviseInternal, PayoutSchedule, SocialGoogle, SocialApple, SocialGoogleMobile,
+          DeviseInternal, PayoutSchedule, SocialTwitter, SocialGoogle, SocialApple, SocialGoogleMobile,
           StripeConnect, Stats, PaymentStats, FeatureStatus, Risk, Compliance, Validations, Taxation, PingNotification,
           AsyncDeviseNotification, Posts, AffiliatedProducts, Followers, LowBalanceFraudCheck, MailerLevel,
           DirectAffiliates, AsJson, Tier, Recommendations, Team, AustralianBacktaxes, WithCdnUrl,
@@ -177,6 +177,15 @@ class User < ApplicationRecord
   attr_json_data_accessor :daily_product_creation_limit
   attr_json_data_accessor :tiktok_pixel_id
 
+  def disable_buyer_local_currency
+    ActiveModel::Type::Boolean.new.cast(json_data_for_attr("disable_buyer_local_currency", default: false))
+  end
+  alias_method :disable_buyer_local_currency?, :disable_buyer_local_currency
+
+  def disable_buyer_local_currency=(value)
+    set_json_data_for_attr("disable_buyer_local_currency", ActiveModel::Type::Boolean.new.cast(value))
+  end
+
   attr_blockable :email
   attr_blockable :form_email, object_type: :email
   attr_blockable :email_domain
@@ -297,7 +306,7 @@ class User < ApplicationRecord
             :flag_query_mode => :bit_operator,
             check_for_column: false
 
-  LINK_PROPERTIES = %w[username bio name google_analytics_id flags
+  LINK_PROPERTIES = %w[username twitter_handle bio name google_analytics_id flags
                        facebook_pixel_id tiktok_pixel_id skip_free_sale_analytics disable_third_party_analytics].freeze
 
   after_update :clear_products_cache, if: -> (user) { (User::LINK_PROPERTIES & user.saved_changes.keys).present? || user.tiktok_pixel_id_changed_in_json_data? || (%w[font background_color highlight_color] & user.seller_profile&.saved_changes&.keys).present? }
@@ -414,15 +423,15 @@ class User < ApplicationRecord
   end
 
   def resized_avatar_url(size:)
-    return ActionController::Base.helpers.asset_url("gumroad-default-avatar-5.png") unless avatar.attached?
+    return ActionController::Base.helpers.image_url("gumroad-default-avatar-5.png") unless avatar.attached?
     cdn_url_for(avatar.variant(resize_to_limit: [size, size]).processed.url)
-  rescue ActiveStorage::FileNotFoundError, Errno::ENOENT => e
+  rescue ActiveStorage::FileNotFoundError, Errno::ENOENT, ActiveRecord::InvalidForeignKey => e
     Rails.logger.warn("User#resized_avatar_url error (#{id}): #{e.class} => #{e.message}")
-    ActionController::Base.helpers.asset_url("gumroad-default-avatar-5.png")
+    ActionController::Base.helpers.image_url("gumroad-default-avatar-5.png")
   end
 
   def avatar_url
-    return ActionController::Base.helpers.asset_url("gumroad-default-avatar-5.png") unless avatar.attached?
+    return ActionController::Base.helpers.image_url("gumroad-default-avatar-5.png") unless avatar.attached?
 
     cached_variant_url = Rails.cache.fetch("attachment_#{avatar.id}_variant_url") { avatar_variant.url }
     cdn_url_for(cached_variant_url)
@@ -841,11 +850,14 @@ class User < ApplicationRecord
   def invalidate_active_sessions!
     update!(last_active_sessions_invalidated_at: DateTime.current)
 
-    # Also, revoke all active tokens assigned to the mobile application
     application = OauthApplication.find_by(uid: OauthApplication::MOBILE_API_OAUTH_APPLICATION_UID)
     if application.present?
-      Doorkeeper::AccessToken.revoke_all_for(application.id, self)
+      application.revoke_access_tokens_for(self)
     end
+  end
+
+  def invalidate_browser_sessions!
+    update!(last_active_sessions_invalidated_at: DateTime.current)
   end
 
   def subdomain
@@ -1246,3 +1258,4 @@ class User < ApplicationRecord
       value.present? && value.to_s == value.to_i.to_s
     end
 end
+# warm cache benchmark

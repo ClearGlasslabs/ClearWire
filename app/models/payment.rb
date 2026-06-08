@@ -28,6 +28,7 @@ class Payment < ApplicationRecord
   attr_json_data_accessor :arrival_date
   attr_json_data_accessor :payout_type
   attr_json_data_accessor :gumroad_fee_cents
+  attr_json_data_accessor :error_message
 
   # Payment state transitions:
   #
@@ -82,6 +83,7 @@ class Payment < ApplicationRecord
     after_transition any => :completed, do: :generate_default_abandoned_cart_workflow
 
     after_transition unclaimed: %i[cancelled reversed returned failed], do: :mark_balances_as_unpaid
+    after_transition processing: %i[reversed returned], do: :mark_balances_as_unpaid
 
     after_transition completed: :returned, do: :mark_balances_as_unpaid
     after_transition completed: :returned, do: :send_deposit_returned_email

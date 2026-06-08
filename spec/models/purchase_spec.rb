@@ -17,6 +17,13 @@ describe Purchase, :vcr do
   let(:chargeable) { create :chargeable }
 
   before do
+    MerchantAccount.gumroad(StripeChargeProcessor.charge_processor_id) ||
+      create(:merchant_account, user: nil, charge_processor_merchant_id: "acct_#{SecureRandom.hex(8)}")
+    MerchantAccount.gumroad(PaypalChargeProcessor.charge_processor_id) ||
+      create(:merchant_account_paypal, user: nil, charge_processor_merchant_id: "paypal_#{SecureRandom.hex(8)}")
+    MerchantAccount.gumroad(BraintreeChargeProcessor.charge_processor_id) ||
+      create(:merchant_account, user: nil, charge_processor_id: BraintreeChargeProcessor.charge_processor_id,
+                                charge_processor_merchant_id: "braintree_#{SecureRandom.hex(8)}")
     allow_any_instance_of(Link).to receive(:recommendable?).and_return(true)
   end
 
@@ -552,11 +559,10 @@ describe Purchase, :vcr do
 
       @product = create(:product)
 
-      BlockedObject.block!(
-        BLOCKED_OBJECT_TYPES[:product],
-        @product.id,
-        nil,
-        expires_in: 6.hours
+      PlatformBlock.add!(
+        object_type: PlatformBlock::TYPES[:product],
+        object_value: @product.id,
+        expires_in: 6.hours,
       )
     end
 
@@ -624,6 +630,17 @@ describe Purchase, :vcr do
       purchase_2 = create(:purchase, link: product, purchase_state: "in_progress")
       expect(purchase_2.errors[:base].present?).to be(true)
       expect(purchase_2.error_code).to eq PurchaseErrorCode::PRODUCT_SOLD_OUT
+    end
+
+    context "when the product's sales_count_for_inventory returns nil" do
+      it "treats nil as 0 instead of raising TypeError" do
+        product = create(:product, max_purchase_count: 5)
+        purchase = build(:purchase, link: product, quantity: 1)
+        allow(purchase).to receive(:link).and_return(product)
+        allow(product).to receive(:sales_count_for_inventory).and_return(nil)
+        expect { purchase.send(:sold_out) }.not_to raise_error
+        expect(purchase.errors[:base]).to be_empty
+      end
     end
 
     describe "subscriptions" do
@@ -728,6 +745,18 @@ describe Purchase, :vcr do
       @purchase.update!(price_cents: 500)
       @purchase.send(:calculate_fees)
       expect(@purchase.as_json[:gumroad_fee]).to eq(145) # 50c (10%) + 50c + 15c (2.9% cc fee) + 30c (fixed cc fee)
+    end
+
+    it "uses the cached resolved discount amount for offer code display" do
+      product = create(:product, price_cents: 1000)
+      offer_code = create(:tiered_offer_code, user: product.user, products: [product], amount_percentage: 0)
+      purchase = create(:purchase, link: product, seller: product.user, offer_code:, price_cents: 500)
+      purchase.create_purchase_offer_code_discount(offer_code:, offer_code_amount: 50, offer_code_is_percent: true, pre_discount_minimum_price_cents: 1000)
+
+      expect(purchase.as_json[:offer_code]).to include(
+        code: offer_code.code,
+        displayed_amount_off: "50%"
+      )
     end
 
     it "has the purchaser_id if one exists" do
@@ -1171,6 +1200,34 @@ describe Purchase, :vcr do
     end
   end
 
+  context "when is_applying_plan_change is true on a require_shipping product" do
+    it "skips address presence validations on :create so plan-change application can proceed for legacy subscribers without an address" do
+      purchase = build(:purchase,
+                       street_address: nil, full_name: nil, country: nil, state: nil, city: nil, zip_code: nil,
+                       link: create(:product, require_shipping: true))
+      purchase.is_applying_plan_change = true
+
+      expect(purchase).to be_valid
+      %i[full_name street_address country state city zip_code].each do |field|
+        expect(purchase.errors[field]).to be_empty
+      end
+    end
+
+    it "skips address presence validations on :update so later updates to the placeholder purchase don't fail" do
+      purchase = build(:purchase,
+                       street_address: nil, full_name: nil, country: nil, state: nil, city: nil, zip_code: nil,
+                       link: create(:product, require_shipping: true))
+      purchase.is_updated_original_subscription_purchase = true
+      purchase.save!(validate: false)
+      purchase.is_applying_plan_change = true
+
+      expect(purchase.valid?(:update)).to be true
+      %i[full_name street_address country state city zip_code].each do |field|
+        expect(purchase.errors[field]).to be_empty
+      end
+    end
+  end
+
   describe "limiting # of sales for a link" do
     let(:user) { create(:user) }
     let(:link) { create(:product, max_purchase_count: 1) }
@@ -1215,7 +1272,7 @@ describe Purchase, :vcr do
     end
 
     describe "purchase is on a creator's merchant account" do
-      let(:purchase) { create(:purchase, merchant_account: create(:merchant_account)) }
+      let(:purchase) { create(:purchase, merchant_account: create(:merchant_account, charge_processor_merchant_id: "acct_#{SecureRandom.hex(8)}")) }
 
       it "returns a Gumroad merchant account" do
         expect(purchase.affiliate_merchant_account.user_id).to eq(nil)
@@ -3125,7 +3182,10 @@ describe Purchase, :vcr do
 
     it "schedules a sidekiq job to invalidate the product's cache in 1 minute" do
       @purchase.mark_successful!
-      expect(InvalidateProductCacheWorker).to have_enqueued_sidekiq_job(@purchase.link.id).in(1.minute)
+      expect(InvalidateProductCacheWorker.jobs.size).to eq(1)
+      job = InvalidateProductCacheWorker.jobs.last
+      expect(job["args"]).to eq([@purchase.link.id])
+      expect(job["at"]).to be_within(1.second).of(1.minute.from_now.to_f)
     end
   end
 
@@ -3150,7 +3210,10 @@ describe Purchase, :vcr do
       @product.update_column(:max_purchase_count, 10)
 
       @purchase.update_balance_and_mark_successful!
-      expect(InvalidateProductCacheWorker).to have_enqueued_sidekiq_job(@purchase.link.id).in(1.minute)
+      expect(InvalidateProductCacheWorker.jobs.size).to eq(1)
+      job = InvalidateProductCacheWorker.jobs.last
+      expect(job["args"]).to eq([@purchase.link.id])
+      expect(job["at"]).to be_within(1.second).of(1.minute.from_now.to_f)
     end
 
     it "sets updated_at on the sku" do
@@ -3450,7 +3513,7 @@ describe Purchase, :vcr do
       end
 
       it "does not allow shipping to a region that is not compliant" do
-        bad_purchase = create(:physical_purchase, price_cents: 100_00, link: @phys_link, chargeable: create(:chargeable), country: "Libya")
+        bad_purchase = create(:physical_purchase, price_cents: 100_00, link: @phys_link, chargeable: create(:chargeable), country: "Iran")
 
         expect(bad_purchase.errors[:base].present?).to be(true)
         expect(bad_purchase.error_code).to eq PurchaseErrorCode::BLOCKED_SHIPPING_COUNTRY
@@ -4777,6 +4840,67 @@ describe Purchase, :vcr do
     end
   end
 
+  describe "#set_price_and_rate" do
+    let(:seller) { create(:user) }
+    let(:buyer) { create(:user) }
+    let(:product) { create(:product, user: seller, price_cents: 1000) }
+    let(:offer_code) do
+      create(:tiered_offer_code, :for_existing_customers,
+             user: seller,
+             products: [product],
+             ownership_products: [product],
+             amount_percentage: 0,
+             ownership_duration_tiers: [
+               { "months" => 0, "amount_percentage" => 0 },
+               { "months" => 12, "amount_percentage" => 50 },
+             ])
+    end
+
+    it "caches the buyer-specific tiered discount amount" do
+      create(:purchase, purchaser: buyer, link: product, seller:, price_cents: product.price_cents, created_at: 13.months.ago)
+      purchase = build(:purchase, purchaser: buyer, link: product, seller:, offer_code:)
+
+      purchase.set_price_and_rate
+
+      expect(purchase.purchase_offer_code_discount.offer_code_amount).to eq(50)
+      expect(purchase.purchase_offer_code_discount.offer_code_is_percent).to eq(true)
+      expect(purchase.displayed_price_cents).to eq(500)
+    end
+
+    it "rejects an existing-customer discount when the buyer does not qualify" do
+      purchase = build(:purchase, purchaser: buyer, link: product, seller:, offer_code:)
+
+      purchase.set_price_and_rate
+
+      expect(purchase.errors.full_messages).to include("Sorry, this discount code is only for existing customers.")
+      expect(purchase.offer_code).to be_nil
+      expect(purchase.purchase_offer_code_discount).to be_nil
+    end
+
+    it "rejects a tiered discount when no tier matches the purchase" do
+      offer_code.update!(existing_customers_only: false, ownership_products: [])
+      offer_code.update_column(:ownership_duration_tiers, [{ "months" => 12, "amount_percentage" => 50 }])
+      purchase = build(:purchase, purchaser: buyer, link: product, seller:, offer_code:)
+
+      purchase.set_price_and_rate
+
+      expect(purchase.offer_code).to be_nil
+      expect(purchase.purchase_offer_code_discount).to be_nil
+    end
+
+    it "keeps the existing-customer discount error when the purchase is saved" do
+      purchase = build(:purchase, purchaser: buyer, link: product, seller:, offer_code:)
+
+      purchase.set_price_and_rate
+      purchase.save
+
+      expect(purchase.errors.full_messages).to include("Sorry, this discount code is only for existing customers.")
+      expect(purchase.error_code).to eq(PurchaseErrorCode::OFFER_CODE_INVALID)
+      expect(purchase.offer_code).to be_nil
+      expect(purchase.purchase_offer_code_discount).to be_nil
+    end
+  end
+
   describe "associations" do
     let(:circle_integration) { create(:circle_integration) }
     let(:discord_integration) { create(:discord_integration) }
@@ -5214,6 +5338,15 @@ describe Purchase, :vcr do
         }
       )
       expect(@purchase.json_data_for_mobile(include_sale_details: true)).to eq(json_data)
+    end
+
+    it "uses the cached resolved discount amount for offer code display" do
+      @purchase.create_purchase_offer_code_discount(offer_code: @offer_code, offer_code_amount: 50, offer_code_is_percent: true, pre_discount_minimum_price_cents: 4000)
+
+      expect(@purchase.json_data_for_mobile(include_sale_details: true)[:offer_code]).to include(
+        code: @offer_code.code,
+        displayed_amount_off: "50%"
+      )
     end
   end
 
@@ -5883,10 +6016,21 @@ describe Purchase, :vcr do
   describe "#amount_refundable_cents_in_currency" do
     let(:purchase) { create(:purchase, link: create(:product, price_currency_type: Currency::EUR), price_cents: 200) }
 
-    before { allow_any_instance_of(Purchase).to receive(:get_rate).with(Currency::EUR).and_return(0.8) }
+    before do
+      allow_any_instance_of(Purchase).to receive(:get_rate).with(:eur).and_return(0.8)
+      purchase.update_columns(displayed_price_currency_type: "eur")
+    end
 
     it "returns the refundable amount in the purchase's currency" do
       expect(purchase.amount_refundable_cents_in_currency).to eq(160)
+    end
+
+    context "when the product has been deleted" do
+      before { purchase.link.destroy! }
+
+      it "uses displayed_price_currency_type from the purchase record" do
+        expect(purchase.reload.amount_refundable_cents_in_currency).to eq(160)
+      end
     end
   end
 
@@ -6166,6 +6310,31 @@ describe Purchase, :vcr do
       product.user.update!(bears_affiliate_fee: true)
       expect(affiliate_purchase.send(:determine_affiliate_fee_cents)).to eq 0
       expect(affiliate_purchase.fee_cents).to eq 209
+    end
+  end
+
+  describe "#determine_affiliate_balance_cents" do
+    let(:seller) { create(:user) }
+    let(:product) { create(:product, user: seller, price_cents: 10_00) }
+
+    it "returns 0 when the affiliate user is the seller (self-affiliate)" do
+      global_affiliate = seller.global_affiliate
+      expect(global_affiliate.affiliate_user_id).to eq(seller.id)
+
+      purchase = create(:purchase, link: product, seller: seller, affiliate: global_affiliate)
+
+      expect(purchase.send(:determine_affiliate_balance_cents)).to eq(0)
+      expect(purchase.affiliate_credit_cents).to eq(0)
+    end
+
+    it "credits the affiliate normally when the affiliate user is not the seller" do
+      affiliate_user = create(:user)
+      direct_affiliate = create(:direct_affiliate, seller: seller, affiliate_user: affiliate_user, affiliate_basis_points: 1000, products: [product])
+
+      purchase = create(:purchase, link: product, seller: seller, affiliate: direct_affiliate)
+
+      expect(purchase.send(:determine_affiliate_balance_cents)).to be > 0
+      expect(purchase.affiliate_credit_cents).to be > 0
     end
   end
 
@@ -6529,5 +6698,4 @@ describe Purchase, :vcr do
       expect(offer_code.reload).not_to be_deleted
     end
   end
-
 end

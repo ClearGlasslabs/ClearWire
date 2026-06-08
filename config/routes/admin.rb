@@ -12,11 +12,6 @@ namespace :admin do
   get "helper_actions/impersonate/:user_external_id", to: "helper_actions#impersonate", as: :impersonate_helper_action
   get "helper_actions/stripe_dashboard/:user_external_id", to: "helper_actions#stripe_dashboard", as: :stripe_dashboard_helper_action
 
-  namespace :cli do
-    get "authorize", to: "authorizations#show", as: :authorize
-    post "authorize", to: "authorizations#create"
-  end
-
   resources :api_tokens, only: :index, param: :external_id do
     member do
       post :revoke
@@ -96,6 +91,7 @@ namespace :admin do
       post :publish
       delete :unpublish
       post :is_adult
+      post :set_content_moderation_disabled
       get "/file/:product_file_id/access", to: "links#access_product_file", as: :admin_access_product_file
       get :views_count
       get :sales_stats
@@ -137,6 +133,7 @@ namespace :admin do
       post :block_buyer
       post :unblock_buyer
       post :undelete
+      post :gdpr_erase_buyer
     end
   end
 

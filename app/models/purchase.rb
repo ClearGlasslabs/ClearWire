@@ -319,9 +319,9 @@ class Purchase < ApplicationRecord
   # this ensures preorders that require shipping at a later date will pass this validation
   %w[full_name street_address country state zip_code city].each do |f|
     validates f.to_sym, presence: true, on: :create,
-                        if: -> { link.is_physical || (link.require_shipping? && !is_recurring_subscription_charge && !is_preorder_charge?) }
+                        if: -> { !is_applying_plan_change && (link.is_physical || (link.require_shipping? && !is_recurring_subscription_charge && !is_preorder_charge?)) }
     validates f.to_sym, presence: true, on: :update,
-                        if: -> { is_updated_original_subscription_purchase && (link.is_physical || link.require_shipping?) && !is_recurring_subscription_charge && !is_preorder_charge? }
+                        if: -> { !is_applying_plan_change && is_updated_original_subscription_purchase && (link.is_physical || link.require_shipping?) && !is_recurring_subscription_charge && !is_preorder_charge? }
   end
   validates :call, presence: true, if: -> { link.native_type == Link::NATIVE_TYPE_CALL }
   validates_inclusion_of :recommender_model_name, in: RecommendedProductsService::MODELS, allow_nil: true
@@ -579,7 +579,7 @@ class Purchase < ApplicationRecord
                 :save_shipping_address, :flow_of_funds, :prorated_discount_price_cents,
                 :original_variant_attributes, :original_price, :is_updated_original_subscription_purchase,
                 :is_applying_plan_change, :setup_intent, :charge_intent, :setup_future_charges, :skip_preparing_for_charge,
-                :installment_plan
+                :installment_plan, :authenticated_offer_code_buyer
 
   delegate :email, :name, to: :seller, prefix: "seller"
   delegate :name, to: :link, prefix: "link", allow_nil: true
@@ -699,7 +699,7 @@ class Purchase < ApplicationRecord
     .not_is_archived_original_subscription_purchase
     .not_rental_expired
     .order(id: :desc)
-    .includes(:preorder, :purchaser, :seller, :subscription, url_redirect: { purchase: { link: [:user, :thumbnail_alive, { display_asset_previews: [:file_attachment, :file_blob] }] } })
+    .includes(:preorder, :purchaser, :seller, :subscription, :link, url_redirect: { purchase: { link: [:user, :thumbnail_alive, { display_asset_previews: [:file_attachment, :file_blob] }] } })
   }
   scope :for_library, lambda {
     all_success_states
@@ -890,9 +890,10 @@ class Purchase < ApplicationRecord
     end
 
     if offer_code.present?
+      offer_code_for_display = original_offer_code(include_deleted: true)
       json[:offer_code] = {
         code: offer_code.code,
-        displayed_amount_off: offer_code.displayed_amount_off(link.price_currency_type, with_symbol: true)
+        displayed_amount_off: offer_code_for_display&.displayed_amount_off(link.price_currency_type, with_symbol: true)
       }
       # For backwards compatibility: offer code's `name` has been renamed to `code`
       json[:offer_code][:name] = offer_code.code if version <= 2
@@ -1718,12 +1719,12 @@ class Purchase < ApplicationRecord
   end
 
   def amount_refundable_in_currency
-    amount_in_cents = usd_cents_to_currency(link.price_currency_type, amount_refundable_cents, rate_converted_to_usd)
+    amount_in_cents = usd_cents_to_currency(displayed_price_currency_type, amount_refundable_cents, rate_converted_to_usd)
     Money.new(amount_in_cents, displayed_price_currency_type).format(no_cents_if_whole: true, symbol: false)
   end
 
   def amount_refundable_cents_in_currency
-    usd_cents_to_currency(link.price_currency_type, amount_refundable_cents, rate_converted_to_usd)
+    usd_cents_to_currency(displayed_price_currency_type, amount_refundable_cents, rate_converted_to_usd)
   end
 
   def refunding_amount_cents(amount)
@@ -1876,9 +1877,18 @@ class Purchase < ApplicationRecord
 
   def set_price_and_rate
     if offer_code.present? && !has_cached_offer_code?
-      self.build_purchase_offer_code_discount(offer_code:, offer_code_amount: offer_code.amount, offer_code_is_percent: offer_code.is_percent?,
-                                              pre_discount_minimum_price_cents: minimum_paid_price_cents_per_unit_before_discount,
-                                              duration_in_months: link.is_recurring_billing? ? offer_code.duration_in_months : nil)
+      resolved_discount = resolved_offer_code_discount_for_buyer
+      if resolved_discount.present?
+        offer_code_is_percent = resolved_discount[:type] == "percent"
+        offer_code_amount = offer_code_is_percent ? resolved_discount[:percents] : resolved_discount[:cents]
+        self.build_purchase_offer_code_discount(offer_code:, offer_code_amount:, offer_code_is_percent:,
+                                                pre_discount_minimum_price_cents: minimum_paid_price_cents_per_unit_before_discount,
+                                                duration_in_months: link.is_recurring_billing? ? offer_code.duration_in_months : nil)
+      else
+        @offer_code_invalid_for_buyer = true
+        reject_existing_customer_offer_code
+        self.offer_code = nil
+      end
     end
 
     self.build_purchasing_power_parity_info(factor: purchasing_power_parity_factor) if is_purchasing_power_parity_discounted? && purchasing_power_parity_factor < 1
@@ -2262,9 +2272,10 @@ class Purchase < ApplicationRecord
       end
 
       if offer_code.present?
+        offer_code_for_display = original_offer_code(include_deleted: true)
         json_data[:offer_code] = {
           code: offer_code.code,
-          displayed_amount_off: offer_code.displayed_amount_off(link.price_currency_type, with_symbol: true)
+          displayed_amount_off: offer_code_for_display&.displayed_amount_off(link.price_currency_type, with_symbol: true)
         }
       end
 
@@ -2282,6 +2293,8 @@ class Purchase < ApplicationRecord
   end
 
   def update_json_data_for_mobile
+    return @cached_product_updates_data if defined?(@cached_product_updates_data)
+
     return [] if subscription.present? && !subscription.alive? && link.block_access_after_membership_cancellation?
 
     all_purchases_of_product = link.sales.for_displaying_installments(email:)
@@ -2289,6 +2302,125 @@ class Purchase < ApplicationRecord
     posts = self.class.product_installments(purchase_ids: all_purchases_of_product.pluck(:id))
 
     posts.map { |post| post.installment_mobile_json_data(purchase: self) }.compact
+  end
+
+  def self.preload_product_updates_data!(purchases)
+    purchases_array = purchases.to_a
+    return if purchases_array.empty?
+
+    # Preload subscription -> original_purchase up front. We need it both for the
+    # blocked-subscription guard (subscription.alive?) and to key email_infos on
+    # original_purchase.id below (Installment#action_at_for_purchase uses
+    # original_purchase.id, so renewals would otherwise miss email_info rows).
+    ActiveRecord::Associations::Preloader.new(
+      records: purchases_array,
+      associations: { subscription: :original_purchase }
+    ).call
+
+    grouped = purchases_array.group_by { |p| [p.link_id, p.email] }
+
+    all_installments = []
+    purchase_to_posts = {}
+
+    grouped.each do |(link_id, email), group|
+      blocked = group.all? { |p| p.subscription.present? && !p.subscription.alive? && p.link.block_access_after_membership_cancellation? }
+      if blocked
+        group.each { |p| purchase_to_posts[p.id] = [] }
+        next
+      end
+
+      qualifying_ids = Purchase.where(link_id: link_id)
+                               .all_success_states_including_test
+                               .can_access_content
+                               .not_fully_refunded
+                               .not_chargedback_or_chargedback_reversed
+                               .not_is_gift_sender_purchase
+                               .where(email: email)
+                               .pluck(:id)
+
+      posts = product_installments(purchase_ids: qualifying_ids)
+      all_installments.concat(posts)
+
+      group.each { |p| purchase_to_posts[p.id] = posts }
+    end
+
+    uniq_installments = all_installments.uniq(&:id)
+    if uniq_installments.any?
+      # Preload `ordered_alive_product_files` (scoped `alive.in_order`) so we can
+      # set it as `cached_alive_product_files` on each post — that way the call to
+      # `alive_product_files` inside `installment_mobile_json_data` hits the cache
+      # instead of re-querying, and any downstream caller of `alive_product_files`
+      # on the same post in this request also benefits.
+      ActiveRecord::Associations::Preloader.new(
+        records: uniq_installments,
+        associations: [:seller, :link, :ordered_alive_product_files]
+      ).call
+
+      uniq_installments.each do |post|
+        post.cached_alive_product_files = post.ordered_alive_product_files.to_a
+      end
+    end
+
+    purchase_ids = purchases_array.map(&:id)
+    # filter_map skips purchases whose scoped has_one original_purchase is nil
+    # (e.g. archived). The blocked-subscription guard below catches those before
+    # the email_info lookup, so omitting nils from the WHERE clause is safe.
+    original_purchase_ids = purchases_array.filter_map { |p| p.original_purchase&.id }.uniq
+    installment_ids = uniq_installments.map(&:id)
+    if installment_ids.any?
+      # `.order(:id)` + reverse_each + assignment keeps the lowest-id record per
+      # [purchase_id, installment_id]. Matches the single-purchase path's
+      # `purchase_url_redirect(...).first` (ORDER BY id ASC LIMIT 1) semantics:
+      # when duplicate UrlRedirect rows exist for the same (purchase, installment),
+      # the lowest id wins.
+      existing_redirects = UrlRedirect.where(purchase_id: purchase_ids, installment_id: installment_ids)
+                                      .order(:id)
+                                      .reverse_each
+                                      .each_with_object({}) { |ur, h| h[[ur.purchase_id, ur.installment_id]] = ur }
+
+      # Key email_infos on original_purchase.id to match action_at_for_purchase's
+      # behavior — otherwise renewal purchases get post.published_at instead of the
+      # actual sent_at/delivered_at timestamp. action_at_for_purchases uses `.last`
+      # ordering by id, so we mirror that by overwriting earlier ids with later ones.
+      email_infos = CreatorContactingCustomersEmailInfo
+                      .where(installment_id: installment_ids, purchase_id: original_purchase_ids)
+                      .order(:id)
+                      .each_with_object({}) { |ei, h| h[[ei.installment_id, ei.purchase_id]] = ei }
+    else
+      existing_redirects = {}
+      email_infos = {}
+    end
+
+    purchases_array.each do |purchase|
+      if purchase.subscription.present? && !purchase.subscription.alive? && purchase.link.block_access_after_membership_cancellation?
+        purchase.instance_variable_set(:@cached_product_updates_data, [])
+        next
+      end
+
+      original_purchase_id = purchase.original_purchase&.id
+      posts = purchase_to_posts[purchase.id] || []
+
+      updates_data = posts.map do |post|
+        # Pre-create the UrlRedirect when missing so the side effect happens in the
+        # preload pass (a dedicated step), not inside installment_mobile_json_data's
+        # serialization. This keeps the create-if-missing semantics from
+        # purchase_url_redirect while isolating the DB write.
+        url_redirect = existing_redirects[[purchase.id, post.id]]
+        url_redirect ||= begin
+          created = UrlRedirect.create!(installment: post, purchase: purchase)
+          existing_redirects[[purchase.id, post.id]] = created
+          created
+        end
+
+        post.installment_mobile_json_data(
+          purchase: purchase,
+          preloaded_purchase_url_redirect: url_redirect,
+          preloaded_purchase_email_info: email_infos[[post.id, original_purchase_id]]
+        )
+      end.compact
+
+      purchase.instance_variable_set(:@cached_product_updates_data, updates_data)
+    end
   end
 
   # Public: Return all installments the customer should see on the content page for a given purchase.
@@ -2618,13 +2750,13 @@ class Purchase < ApplicationRecord
   end
 
   def original_offer_code(include_deleted: false)
-    return nil if offer_code&.deleted? && !include_deleted
+    return nil if offer_code&.deleted? && !include_deleted && !purchase_offer_code_discount&.offer_code&.tiered?
 
     if has_cached_offer_code?
-      code = purchase_offer_code_discount.offer_code.code
+      original_offer_code = purchase_offer_code_discount.offer_code
       purchase_offer_code_discount.offer_code_is_percent ?
-        OfferCode.new(amount_percentage: purchase_offer_code_discount.offer_code_amount, code:) :
-        OfferCode.new(amount_cents: purchase_offer_code_discount.offer_code_amount, code:)
+        OfferCode.new(amount_percentage: purchase_offer_code_discount.offer_code_amount, code: original_offer_code.code, name: original_offer_code.name) :
+        OfferCode.new(amount_cents: purchase_offer_code_discount.offer_code_amount, code: original_offer_code.code, name: original_offer_code.name)
     else
       offer_code
     end
@@ -2863,6 +2995,23 @@ class Purchase < ApplicationRecord
   end
 
   private
+    def resolved_offer_code_discount_for_buyer
+      if offer_code.existing_customers_only? || offer_code.tiered?
+        evaluated_discount = offer_code.evaluate_for_buyer(offer_code_buyer, product: link)
+        return nil if offer_code.existing_customers_only? && evaluated_discount.blank?
+        return nil if offer_code.tiered? && evaluated_discount.nil?
+        return evaluated_discount if offer_code.tiered? && evaluated_discount.present?
+      end
+
+      offer_code.is_percent? ?
+        { type: "percent", percents: offer_code.amount } :
+        { type: "fixed", cents: offer_code.amount }
+    end
+
+    def offer_code_buyer
+      instance_variable_defined?(:@authenticated_offer_code_buyer) ? authenticated_offer_code_buyer : purchaser
+    end
+
     def auto_delete_single_use_offer_code
       offer_code.auto_delete_if_single_use_exhausted!
     rescue => e
@@ -2984,6 +3133,7 @@ class Purchase < ApplicationRecord
 
     def determine_affiliate_balance_cents
       return 0 if affiliate.nil?
+      return 0 if affiliate.affiliate_user_id == seller_id
 
       affiliate_cents = affiliate_cut * displayed_price_usd_cents
       affiliate_cents -= determine_affiliate_fee_cents
@@ -3513,6 +3663,7 @@ class Purchase < ApplicationRecord
 
     def validate_offer_code
       return if errors.present?
+      return reject_existing_customer_offer_code if @offer_code_invalid_for_buyer
       # accept the offer code that was used when the buyer preordered/subscribed
       return if is_preorder_charge? || is_recurring_subscription_charge || is_gift_receiver_purchase || (is_installment_payment && !is_original_subscription_purchase)
       return if discount_code.blank?
@@ -3546,6 +3697,11 @@ class Purchase < ApplicationRecord
       end
 
       true
+    end
+
+    def reject_existing_customer_offer_code
+      self.error_code = PurchaseErrorCode::OFFER_CODE_INVALID
+      errors.add(:base, "Sorry, this discount code is only for existing customers.")
     end
 
     def validate_subscription
@@ -3611,9 +3767,10 @@ class Purchase < ApplicationRecord
       # Allow recurring billing and pre-order charges even after the product is sold out.
       return if does_not_count_towards_max_purchases
       return if link.max_purchase_count.nil?
-      return if (link.sales_count_for_inventory + quantity) <= link.max_purchase_count
+      sales_count = link.sales_count_for_inventory.to_i
+      return if (sales_count + quantity) <= link.max_purchase_count
 
-      if link.sales_count_for_inventory == link.max_purchase_count
+      if sales_count == link.max_purchase_count
         self.error_code = PurchaseErrorCode::PRODUCT_SOLD_OUT
         errors.add :base, "Sold out, please go back and pick another option."
       else
@@ -3678,7 +3835,7 @@ class Purchase < ApplicationRecord
     def product_is_not_blocked
       return if price_cents.zero?
       return if Feature.inactive?(:block_purchases_on_product)
-      return if BlockedObject.product.find_active_object(link_id).blank?
+      return if PlatformBlock.product.active.find_by(object_value: link_id).blank?
 
       self.error_code = PurchaseErrorCode::TEMPORARILY_BLOCKED_PRODUCT
       errors.add :base, "Your card was not charged."

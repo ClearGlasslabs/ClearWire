@@ -231,7 +231,7 @@ const b = 2;</code></pre>
 <div class="item">
   <div class="product-checkout-cell">
     <div class="figure">
-        <img alt="The Works of Edgar Gumstein" src="/assets/native_types/thumbnails/digital-d4b2a661e31ec353551a8dae9996b1e75b1e629e363d683aaa5fd2fb1213311c.png">
+        <img alt="The Works of Edgar Gumstein" src="/images/native_types/thumbnails/digital.png">
     </div>
     <div class="section">
       <div class="content">
@@ -1254,6 +1254,77 @@ const b = 2;</code></pre>
 
       it "returns true" do
         expect(installment.delivery_due?(purchase)).to be true
+      end
+    end
+  end
+
+  describe "non-opener queries" do
+    let(:seller) { create(:user) }
+    let(:product) { create(:product, user: seller) }
+    let(:post) { create(:product_post, :published, seller:, link: product) }
+    let(:opened_purchase) { create(:purchase, link: product, seller:) }
+    let(:delivered_purchase) { create(:purchase, link: product, seller:) }
+    let(:sent_purchase) { create(:purchase, link: product, seller:) }
+
+    before do
+      create(:creator_contacting_customers_email_info_opened, installment: post, purchase: opened_purchase)
+      create(:creator_contacting_customers_email_info_delivered, installment: post, purchase: delivered_purchase)
+      create(:creator_contacting_customers_email_info_sent, installment: post, purchase: sent_purchase)
+    end
+
+    describe "#emailed_recipient_purchase_ids" do
+      it "returns all purchase ids the post was emailed to" do
+        expect(post.emailed_recipient_purchase_ids).to match_array([opened_purchase.id, delivered_purchase.id, sent_purchase.id])
+      end
+    end
+
+    describe "#opened_recipient_purchase_ids" do
+      it "returns only purchase ids that opened the email" do
+        expect(post.opened_recipient_purchase_ids).to eq([opened_purchase.id])
+      end
+    end
+
+    describe "#unopened_recipient_purchase_ids" do
+      it "returns emailed recipients who have not opened the email" do
+        expect(post.unopened_recipient_purchase_ids).to match_array([delivered_purchase.id, sent_purchase.id])
+      end
+
+      it "returns an empty array for follower posts which have no per-recipient open linkage" do
+        follower_post = create(:follower_post, :published, seller:)
+        expect(follower_post.unopened_recipient_purchase_ids).to eq([])
+      end
+    end
+
+    describe "#unopened_recipients_count" do
+      it "counts emailed recipients who have not opened the email" do
+        expect(post.unopened_recipients_count).to eq(2)
+      end
+
+      it "still counts a buyer whose audience row's max(purchase_id) is a newer purchase than the one emailed" do
+        # Same email/buyer, second purchase later than the one we emailed.
+        newer = create(:purchase, link: product, seller:, email: delivered_purchase.email)
+        expect(newer.id).to be > delivered_purchase.id
+        # delivered_purchase has email_info state=delivered (unopened). The buyer should still count.
+        expect(post.unopened_recipients_count).to eq(2)
+      end
+    end
+
+    describe "#resendable_to_non_openers?" do
+      it "is true for a published customer post that emails" do
+        expect(post.resendable_to_non_openers?).to be(true)
+      end
+
+      it "is false for an unpublished post" do
+        expect(create(:product_post, seller:, link: product).resendable_to_non_openers?).to be(false)
+      end
+
+      it "is false for a follower post" do
+        expect(create(:follower_post, :published, seller:).resendable_to_non_openers?).to be(false)
+      end
+
+      it "is false when the post does not email" do
+        profile_only_post = create(:product_post, :published, seller:, link: product, send_emails: false, shown_on_profile: true)
+        expect(profile_only_post.resendable_to_non_openers?).to be(false)
       end
     end
   end

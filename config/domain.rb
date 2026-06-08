@@ -53,21 +53,21 @@ configuration_by_env = {
     anycable_host: "cable.test.gumroad.com",
   },
   development: {
-    protocol: "https",
-    domain: "gumroad.dev",
-    asset_domain: "app.gumroad.dev",
-    root_domain: "gumroad.dev",
-    short_domain: "short-domain.gumroad.dev",
-    discover_domain: "gumroad.dev",
-    api_domain: "api.gumroad.dev",
-    third_party_analytics_domain: "analytics.gumroad.dev",
-    valid_request_hosts: ["app.gumroad.dev", "gumroad.dev"],
-    valid_api_request_hosts: ["api.gumroad.dev"],
-    valid_discover_host: "gumroad.dev",
+    protocol: "http",
+    domain: "localhost:3000",
+    asset_domain: "app.localhost:3000",
+    root_domain: "localhost:3000",
+    short_domain: "s.localhost:3000",
+    discover_domain: "localhost:3000",
+    api_domain: "api.localhost:3000",
+    third_party_analytics_domain: "analytics.localhost:3000",
+    valid_request_hosts: ["app.localhost", "localhost", "app.localhost:3000", "localhost:3000"],
+    valid_api_request_hosts: ["api.localhost", "api.localhost:3000"],
+    valid_discover_host: "localhost",
     valid_cors_origins: [],
-    internal_gumroad_domain: "internal.gumroad.dev",
+    internal_gumroad_domain: "internal.localhost",
     default_email_domain: "staging.gumroad.com",
-    anycable_host: "cable.gumroad.dev",
+    anycable_host: "cable.localhost",
   }
 }
 
@@ -78,7 +78,7 @@ config              = configuration_by_env[environment]
 
 PROTOCOL            = config[:protocol]
 DOMAIN              = custom_domain || config[:domain]
-ASSET_DOMAIN        = config[:asset_domain]
+ASSET_DOMAIN        = ENV["ASSET_DOMAIN"] || config[:asset_domain]
 ROOT_DOMAIN         = custom_domain || config[:root_domain]
 SHORT_DOMAIN        = custom_short_domain || config[:short_domain]
 API_DOMAIN          = config[:api_domain]
@@ -93,7 +93,8 @@ ANYCABLE_HOST           = config[:anycable_host]
 if custom_domain
   VALID_REQUEST_HOSTS << custom_domain
   VALID_API_REQUEST_HOSTS << "api.#{custom_domain}"
-  VALID_API_REQUEST_HOSTS << custom_domain if ENV["BRANCH_DEPLOYMENT"].present? # Allow CORS to branch-apps's root domain
+  VALID_API_REQUEST_HOSTS << custom_domain if ENV["BRANCH_DEPLOYMENT"].present? # Allow CORS to preview app's root domain
+  VALID_CORS_ORIGINS << custom_domain
   DISCOVER_DOMAIN = custom_domain
   VALID_DISCOVER_REQUEST_HOST = custom_domain
 else

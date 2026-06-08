@@ -8,6 +8,9 @@ export const Navigation = () => (
   >
     <menu className="grid list-none gap-3">
       <li>
+        <a href="#api-cli">Command line</a>
+      </li>
+      <li>
         <a href="#api-intro">Introduction</a>
       </li>
       <li>
@@ -26,10 +29,19 @@ export const Navigation = () => (
             <a href="#products">Products</a>
           </li>
           <li>
+            <a href="#public-product-page">Public product page</a>
+          </li>
+          <li>
+            <a href="#categories">Categories</a>
+          </li>
+          <li>
             <a href="#files">Files</a>
           </li>
           <li>
             <a href="#covers">Covers</a>
+          </li>
+          <li>
+            <a href="#thumbnails">Thumbnails</a>
           </li>
           <li>
             <a href="#variant-categories">Variant categories</a>
@@ -42,6 +54,12 @@ export const Navigation = () => (
           </li>
           <li>
             <a href="#user">User</a>
+          </li>
+          <li>
+            <a href="#public-profile">Public profile</a>
+          </li>
+          <li>
+            <a href="#refund-policy">Refund policy</a>
           </li>
           <li>
             <a href="#resource-subscriptions">Resource subscriptions</a>

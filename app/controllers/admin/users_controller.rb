@@ -13,7 +13,7 @@ class Admin::UsersController < Admin::BaseController
       format.html do
         render inertia: "Admin/Users/Show",
                props: {
-                 user: Admin::UserPresenter::Card.new(user: @user, pundit_user:).props,
+                 user: Admin::UserPresenter::Card.new(user: @user, pundit_user:, include_radar_stats: true).props,
                }
       end
       format.json { render json: @user }
@@ -95,11 +95,11 @@ class Admin::UsersController < Admin::BaseController
   end
 
   def block_ip_address
-    BlockedObject.block!(
-      BLOCKED_OBJECT_TYPES[:ip_address],
-      params[:ip_address],
-      current_user.id,
-      expires_in: BlockedObject::IP_ADDRESS_BLOCKING_DURATION_IN_MONTHS.months
+    PlatformBlock.add!(
+      object_type: PlatformBlock::TYPES[:ip_address],
+      object_value: params[:ip_address],
+      by: current_user.id,
+      expires_in: PlatformBlock::IP_ADDRESS_BLOCKING_DURATION_IN_MONTHS.months,
     )
     render json: { success: true }
   end
@@ -167,24 +167,25 @@ class Admin::UsersController < Admin::BaseController
   end
 
   def add_credit
-    credit_params = params.require(:credit).permit(:credit_amount)
+    credit_params = params.require(:credit).permit(:credit_amount, :reason)
     credit_amount = credit_params[:credit_amount]
+    reason = credit_params[:reason].to_s.strip
 
-    if credit_amount.present?
-      begin
-        credit_amount_cents = (BigDecimal(credit_amount.to_s) * 100).round
-        user_credit = Credit.create_for_credit!(
-          user: @user,
-          amount_cents: credit_amount_cents,
-          crediting_user: current_user
-        )
-        user_credit.notify_user if credit_amount_cents > 0
-        render json: { success: true, amount: credit_amount }
-      rescue ArgumentError, Credit::Error => e
-        render json: { success: false, message: e.message }
-      end
-    else
-      render json: { success: false, message: "Credit amount is required" }
+    return render json: { success: false, message: "Credit amount is required" } if credit_amount.blank?
+    return render json: { success: false, message: "Reason is required" } if reason.blank?
+
+    begin
+      credit_amount_cents = (BigDecimal(credit_amount.to_s) * 100).round
+      user_credit = Credit.create_for_credit!(
+        user: @user,
+        amount_cents: credit_amount_cents,
+        crediting_user: current_user,
+        reason:
+      )
+      user_credit.notify_user if credit_amount_cents > 0
+      render json: { success: true, amount: credit_amount }
+    rescue ArgumentError, Credit::Error => e
+      render json: { success: false, message: e.message }
     end
   end
 
@@ -227,6 +228,7 @@ class Admin::UsersController < Admin::BaseController
       scheduled_payout = @user.scheduled_payouts.create!(
         action: sp_params[:action],
         delay_days: sp_params[:delay_days].presence || 21,
+        processor: sp_params[:action] == "payout" ? @user.current_payout_processor : nil,
         payout_amount_cents: @user.unpaid_balance_cents,
         created_by: current_user
       )

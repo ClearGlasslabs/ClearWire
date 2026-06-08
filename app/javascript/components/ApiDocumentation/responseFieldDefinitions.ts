@@ -21,6 +21,27 @@ export const COVER_FIELDS: FieldDefinition[] = [
   { name: "native_height", type: "number", description: "Intrinsic height of the source asset in pixels" },
 ];
 
+export const CATEGORY_FIELDS: FieldDefinition[] = [
+  { name: "id", type: "number", description: "Numeric category ID accepted by taxonomy_id" },
+  { name: "name", type: "string", description: 'Short category slug (e.g. "figma")' },
+  { name: "label", type: "string", description: 'Human-readable category label (e.g. "Figma")' },
+  {
+    name: "path",
+    type: "string",
+    description: 'Full category path accepted by category (e.g. "design/ui-and-web/figma")',
+  },
+  {
+    name: "parent_id",
+    type: "number | null",
+    description: "Numeric ID of the parent category; null for root categories",
+  },
+];
+
+export const THUMBNAIL_FIELDS: FieldDefinition[] = [
+  { name: "url", type: "string", description: "CDN URL of the product thumbnail image" },
+  { name: "guid", type: "string", description: "Unique identifier for the thumbnail" },
+];
+
 const PRODUCT_VARIANT_FIELDS: FieldDefinition[] = [
   { name: "title", type: "string", description: 'Variant category title (e.g. "Tier")' },
   {
@@ -32,15 +53,15 @@ const PRODUCT_VARIANT_FIELDS: FieldDefinition[] = [
       {
         name: "price_difference",
         type: "number | null",
-        description: "Price difference in cents from the base price (0 for membership tiers, whose prices are set via recurrence_prices)",
+        description:
+          "Price difference in cents from the base price (0 for membership tiers, whose prices are set via recurrence_prices)",
       },
       {
         name: "purchasing_power_parity_prices",
         type: "object | null",
         description:
           "PPP-adjusted prices for this option, computed from the base price plus price_difference; null for options whose price_difference is null",
-        condition:
-          "present when the seller has purchasing power parity enabled and the product has not opted out",
+        condition: "present when the seller has purchasing power parity enabled and the product has not opted out",
       },
       { name: "is_pay_what_you_want", type: "boolean", description: "Whether this option is pay-what-you-want" },
       { name: "url", type: "null", description: "Deprecated, always null" },
@@ -61,8 +82,7 @@ const PRODUCT_VARIANT_FIELDS: FieldDefinition[] = [
             name: "purchasing_power_parity_prices",
             type: "object",
             description: "PPP-adjusted prices for this recurrence",
-            condition:
-              "present when the seller has purchasing power parity enabled and the product has not opted out",
+            condition: "present when the seller has purchasing power parity enabled and the product has not opted out",
           },
         ],
       },
@@ -80,11 +100,11 @@ const SHARED_PRODUCT_FIELDS: FieldDefinition[] = [
   { name: "custom_permalink", type: "string | null", description: "Custom URL slug for the product" },
   { name: "custom_receipt", type: "string | null", description: "Custom receipt text" },
   { name: "custom_summary", type: "string | null", description: "Custom summary shown to buyers" },
+  { name: "custom_html", type: "string | null", description: "Custom landing page HTML for the product" },
   {
     name: "custom_fields",
     type: "array",
-    description:
-      "Combined list of the seller's global checkout custom fields and the product's own custom fields",
+    description: "Combined list of the seller's global checkout custom fields and the product's own custom fields",
   },
   { name: "customizable_price", type: "boolean | null", description: "Whether pay-what-you-want pricing is enabled" },
   { name: "description", type: "string | null", description: "Product description" },
@@ -105,6 +125,9 @@ const SHARED_PRODUCT_FIELDS: FieldDefinition[] = [
     condition: "present when the seller has purchasing power parity enabled and the product has not opted out",
   },
   { name: "currency", type: "string", description: 'ISO currency code (e.g. "usd")' },
+  { name: "taxonomy_id", type: "number | null", description: "Numeric category ID" },
+  { name: "category", type: "string | null", description: "Full category path" },
+  { name: "category_label", type: "string | null", description: "Human-readable category label" },
   { name: "short_url", type: "string", description: "Short Gumroad URL for the product" },
   { name: "thumbnail_url", type: "string | null", description: "URL of the product thumbnail image" },
   {
@@ -184,7 +207,12 @@ const SHARED_PRODUCT_FIELDS: FieldDefinition[] = [
 
 export const PRODUCT_LIST_FIELDS: FieldDefinition[] = [
   ...SHARED_PRODUCT_FIELDS,
-  { name: "variants", type: "array", description: "Variant categories and their options", children: PRODUCT_VARIANT_FIELDS },
+  {
+    name: "variants",
+    type: "array",
+    description: "Variant categories and their options",
+    children: PRODUCT_VARIANT_FIELDS,
+  },
 ];
 
 export const PRODUCT_FIELDS: FieldDefinition[] = [
@@ -207,13 +235,18 @@ export const PRODUCT_FIELDS: FieldDefinition[] = [
       {
         name: "url",
         type: "string",
-        description: "Signed download URL for uploaded files; raw URL for external-link files (filetype: \"link\")",
+        description: 'Signed download URL for uploaded files; raw URL for external-link files (filetype: "link")',
       },
       { name: "filetype", type: "string", description: 'File extension (e.g. "pdf") or "link" for external URLs' },
       { name: "filegroup", type: "string", description: 'Group classification (e.g. "audio", "video", "document")' },
     ],
   },
-  { name: "variants", type: "array", description: "Variant categories and their options", children: PRODUCT_VARIANT_FIELDS },
+  {
+    name: "variants",
+    type: "array",
+    description: "Variant categories and their options",
+    children: PRODUCT_VARIANT_FIELDS,
+  },
 ];
 
 export const SALE_FIELDS: FieldDefinition[] = [
@@ -515,6 +548,7 @@ export const PAYOUT_DETAIL_FIELDS: FieldDefinition[] = [
 export const USER_FIELDS: FieldDefinition[] = [
   { name: "bio", type: "string | null", description: "User's bio" },
   { name: "name", type: "string", description: "User's display name" },
+  { name: "twitter_handle", type: "string | null", description: "User's Twitter handle" },
   { name: "id", type: "string", description: "Unique identifier for the user" },
   { name: "user_id", type: "string", description: "Alternate user ID, not currently used" },
   {

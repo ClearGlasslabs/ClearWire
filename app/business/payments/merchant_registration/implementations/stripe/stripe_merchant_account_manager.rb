@@ -142,11 +142,12 @@ module StripeMerchantAccountManager
 
     last_attributes = account_hash(user, nil, last_user_compliance_info, passphrase:)
     current_attributes = account_hash(user, tos_agreement, user_compliance_info, passphrase:)
+    country_code = user_compliance_info.legal_entity_country_code
     last_attributes[:metadata] = {}
     last_attributes[:business_profile] = {}
     if user_compliance_info.is_business?
       last_attributes.delete(:individual)
-      if last_attributes[:company].present? && user_compliance_info.country_code == Compliance::Countries::USA.alpha2
+      if last_attributes[:company].present? && country_code == Compliance::Countries::USA.alpha2
         last_attributes[:company][:structure] = nil
       end
       last_attributes.delete(:business_type) if user_compliance_info.country_code == Compliance::Countries::CAN.alpha2
@@ -177,7 +178,7 @@ module StripeMerchantAccountManager
 
     if last_user_compliance_info&.is_business? && user_compliance_info.is_individual?
       # Clear structure first - Stripe rejects company[structure] when business_type is "individual"
-      if last_user_compliance_info.country_code == Compliance::Countries::USA.alpha2 &&
+      if last_user_compliance_info.legal_entity_country_code == Compliance::Countries::USA.alpha2 &&
         last_user_compliance_info.business_type == UserComplianceInfo::BusinessTypes::SOLE_PROPRIETORSHIP
         Stripe::Account.update(stripe_account.id, { company: { structure: "" } })
       end
@@ -189,7 +190,7 @@ module StripeMerchantAccountManager
 
     # Only set structure for US accounts
     if user_compliance_info.is_business? &&
-      user_compliance_info.country_code == Compliance::Countries::USA.alpha2 &&
+      country_code == Compliance::Countries::USA.alpha2 &&
       user_compliance_info.business_type == UserComplianceInfo::BusinessTypes::SOLE_PROPRIETORSHIP
       diff_attributes[:company] ||= {}
       diff_attributes[:company][:structure] = user_compliance_info.business_type
@@ -210,12 +211,21 @@ module StripeMerchantAccountManager
   end
 
   def self.update_person(user, stripe_account, last_user_compliance_info_id, passphrase)
-    stripe_person = Stripe::Account.list_persons(stripe_account.id)["data"].last
+    stripe_person = Stripe::Account.list_persons(stripe_account.id, relationship: { representative: true }, limit: 1)["data"].first
+    return if stripe_person.nil?
+
     last_user_compliance_info = UserComplianceInfo.find_by_external_id(last_user_compliance_info_id)
     user_compliance_info = user.alive_user_compliance_info
 
     current_attributes = person_hash(user_compliance_info, passphrase)
-    current_attributes.deep_merge!(relationship: { representative: true, owner: true, title: user_compliance_info.job_title.presence || DEFAULT_RELATIONSHIP_TITLE, percent_ownership: 100 })
+    current_attributes.deep_merge!(relationship: { representative: true })
+    if last_user_compliance_info&.is_individual? && user_compliance_info.is_business?
+      current_attributes.deep_merge!(relationship: {
+                                       owner: true,
+                                       title: user_compliance_info.job_title.presence || DEFAULT_RELATIONSHIP_TITLE,
+                                       percent_ownership: 100
+                                     })
+    end
     diff_attributes = current_attributes
     last_attributes = person_hash(last_user_compliance_info, passphrase)
 
@@ -275,6 +285,7 @@ module StripeMerchantAccountManager
     Stripe::Account.update(stripe_account.id, attributes)
 
     save_stripe_bank_account_info(bank_account, stripe_account.refresh)
+    clear_stale_bank_sync_failure_notes(user)
     :synced
   rescue Stripe::InvalidRequestError => e
     record_bank_sync_failure_note(user, e)
@@ -305,6 +316,19 @@ module StripeMerchantAccountManager
     user.add_payout_note(content: "Stripe bank sync failed: #{code || 'unknown'} — #{error.message.to_s.truncate(200)}")
   rescue => e
     Rails.logger.error "Failed to record payout-note breadcrumb for user #{user&.id}: #{e.class}: #{e.message}"
+    ErrorNotifier.notify(e)
+  end
+
+  private_class_method
+  def self.clear_stale_bank_sync_failure_notes(user)
+    user.comments
+        .with_type_payout_note
+        .alive
+        .where(author_id: GUMROAD_ADMIN_ID)
+        .where("content LIKE ?", "Stripe bank sync failed%")
+        .update_all(deleted_at: Time.current)
+  rescue => e
+    Rails.logger.error "Failed to clear stale bank sync failure notes for user #{user&.id}: #{e.class}: #{e.message}"
     ErrorNotifier.notify(e)
   end
 
@@ -445,12 +469,12 @@ module StripeMerchantAccountManager
             bank_account.account_number.decrypt(passphrase).gsub(/[ -]/, "")
           end
         bank_account_hash = {
-          country: bank_account.country,
-          currency: bank_account.currency,
+          country: bank_account.stripe_external_account_country,
+          currency: bank_account.stripe_external_account_currency,
           account_number: account_number_for_stripe
         }
-        if bank_account.routing_number.present?
-          routing_number = bank_account.routing_number
+        routing_number = bank_account.stripe_external_account_routing_number
+        if routing_number.present?
           routing_number = routing_number.gsub(/[ -]/, "") if country_code == Compliance::Countries::GIB.alpha2
           bank_account_hash[:routing_number] = routing_number
         end
@@ -488,6 +512,7 @@ module StripeMerchantAccountManager
   def self.person_hash(user_compliance_info, passphrase)
     if user_compliance_info
       personal_tax_id = user_compliance_info.individual_tax_id.decrypt(passphrase)
+      country_code = user_compliance_info.country_code
 
       hash = {
         first_name: user_compliance_info.first_name,
@@ -501,10 +526,6 @@ module StripeMerchantAccountManager
           year: user_compliance_info.birthday.try(:year)
         }
       }
-
-      if user_compliance_info.legal_entity_country_code == Compliance::Countries::CAN.alpha2
-        hash.deep_merge!(relationship: { title: user_compliance_info.job_title.presence || DEFAULT_RELATIONSHIP_TITLE })
-      end
 
       if user_compliance_info.country_code == Compliance::Countries::JPN.alpha2
         hash.deep_merge!({
@@ -535,27 +556,33 @@ module StripeMerchantAccountManager
                              city: user_compliance_info.city,
                              state: user_compliance_info.state,
                              postal_code: user_compliance_info.zip_code,
-                             country: user_compliance_info.country_code
+                             country: country_code
                            },
                          })
       end
 
-      # For US accounts, only submit the Personal Tax ID if it's longer than four digits, otherwise the field contains the SSN Last 4.
-      # For non-US accounts, always submit the Personal Tax ID.
-      if personal_tax_id && (user_compliance_info.country_code != Compliance::Countries::USA.alpha2 || personal_tax_id.length > 4)
-        hash.deep_merge!(id_number: personal_tax_id)
-      end
-
-      # For US accounts, only submit the SSN Last 4 if we have enough digits in the Tax ID to get the last 4.
-      # For non-US accounts, never submit this field, it is for US accounts only.
-      if user_compliance_info.country_code == Compliance::Countries::USA.alpha2 && personal_tax_id && personal_tax_id.length == 4
-        hash.deep_merge!(ssn_last_4: personal_tax_id.last(4))
+      # `id_number` / `ssn_last_4` are validated by Stripe against the *account* country, not the
+      # representative's. For a US account Stripe expects a 9-digit SSN/ITIN. Submitting a foreign
+      # national ID (e.g. a 10-digit Bangladeshi NID for a foreign-resident US-LLC owner) trips a
+      # "must be 9 digits" rejection. In that case we omit the tax ID so Stripe falls through to the
+      # standard document-verification remediation flow.
+      legal_entity_country_code = user_compliance_info.legal_entity_country_code
+      if personal_tax_id.present?
+        if legal_entity_country_code == Compliance::Countries::USA.alpha2
+          if country_code == Compliance::Countries::USA.alpha2 && personal_tax_id.length == 4
+            hash.deep_merge!(ssn_last_4: personal_tax_id.last(4))
+          elsif personal_tax_id.length == 9
+            hash.deep_merge!(id_number: personal_tax_id)
+          end
+        else
+          hash.deep_merge!(id_number: personal_tax_id)
+        end
       end
 
       if [Compliance::Countries::ARE.alpha2,
           Compliance::Countries::SGP.alpha2,
           Compliance::Countries::BGD.alpha2,
-          Compliance::Countries::PAK.alpha2].include?(user_compliance_info.country_code)
+          Compliance::Countries::PAK.alpha2].include?(legal_entity_country_code)
         hash.deep_merge!(nationality: user_compliance_info.nationality)
       end
 
@@ -714,16 +741,26 @@ module StripeMerchantAccountManager
     requirements = stripe_account["requirements"] || {}
     future_requirements = stripe_account["future_requirements"] || {}
 
+    should_save = false
     if stripe_account["default_currency"] && stripe_account["country"]
       merchant_account.currency = stripe_account["default_currency"]
       merchant_account.country = stripe_account["country"]
-      merchant_account.save!
+      should_save = true
     end
+    if merchant_account.stripe_disabled_reason != requirements["disabled_reason"]
+      merchant_account.stripe_disabled_reason = requirements["disabled_reason"]
+      should_save = true
+    end
+    merchant_account.save! if should_save
 
     individual = if stripe_account["business_type"] == "individual"
       stripe_account["individual"] || {}
     else
-      Stripe::Account.list_persons(stripe_account_id, { limit: 1 }).first || {}
+      person = Stripe::Account.list_persons(stripe_account_id, { limit: 1 }).first
+      if person && person["relationship"] && person["relationship"]["representative"] == false
+        person = Stripe::Account.list_persons(stripe_account_id, relationship: { representative: true }, limit: 1).first
+      end
+      person || {}
     end
     individual_verification_status = individual["verification"].try(:[], "status")
     merchant_account.mark_charge_processor_verified! if individual_verification_status == "verified"
@@ -867,10 +904,13 @@ module StripeMerchantAccountManager
     return if all_fields_needed.empty?
 
     document_verification_error = verification_errors.select { |_field, error| error[:code].starts_with?("verification_document") }.first
+    skip_more_kyc_email = requirements_only_soft_future?(requirements, new_requests, all_fields_needed, requirements_due_at)
     email_sent = if document_verification_error.present?
       ContactingCreatorMailer.stripe_document_verification_failed(user.id, document_verification_error[1][:reason]).deliver_later(queue: "critical")
     elsif verification_errors.present?
       ContactingCreatorMailer.stripe_identity_verification_failed(user.id, verification_errors.first[1][:reason]).deliver_later(queue: "critical")
+    elsif skip_more_kyc_email
+      nil
     else
       ContactingCreatorMailer.more_kyc_needed(user.id, all_fields_needed).deliver_later(queue: "critical")
     end
@@ -897,5 +937,30 @@ module StripeMerchantAccountManager
     return unless user_has_stripe_connect_merchant_account?(bank_account.user)
 
     update_bank_account(bank_account.user, passphrase: GlobalConfig.get("STRONGBOX_GENERAL_PASSWORD"))
+  end
+
+  SOFT_FUTURE_REQUIREMENT_GRACE_PERIOD = 30.days
+
+  private_class_method
+  def self.requirements_only_soft_future?(requirements, new_requests, all_fields_needed, requirements_due_at)
+    return false if Array(all_fields_needed).empty?
+    return false unless requirements_due_at.blank? || requirements_due_at > SOFT_FUTURE_REQUIREMENT_GRACE_PERIOD.from_now
+
+    eventually_due_only = (requirements["eventually_due"] || []) -
+                          (requirements["currently_due"] || []) -
+                          (requirements["past_due"] || [])
+    return false if eventually_due_only.empty?
+
+    soft_field_names = eventually_due_only.map do |raw_field|
+      normalized = raw_field.gsub(/^person_\w+\./, "individual.")
+      StripeUserComplianceInfoFieldMap.map(normalized).presence || normalized
+    end
+
+    if new_requests.present?
+      return false unless new_requests.all? { |request| soft_field_names.include?(request.field_needed) }
+    end
+    return false unless Array(all_fields_needed).all? { |field| soft_field_names.include?(field) }
+
+    true
   end
 end

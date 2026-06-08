@@ -2,7 +2,7 @@ import { Bank, CreditCard, Paypal, Stripe } from "@boxicons/react";
 import { useForm, usePage } from "@inertiajs/react";
 import parsePhoneNumberFromString, { CountryCode } from "libphonenumber-js";
 import * as React from "react";
-import { cast } from "ts-safe-cast";
+import typia from "typia";
 
 import { CardPayoutError, prepareCardTokenForPayouts, type CardPayoutToken } from "$app/data/card_payout_data";
 import { SavedCreditCard } from "$app/parsers/card";
@@ -24,6 +24,7 @@ import BankAccountSection, {
   BankAccountDetails,
   type BankAccount,
 } from "$app/components/Settings/PaymentsPage/BankAccountSection";
+import BeneficialOwnersSection from "$app/components/Settings/PaymentsPage/BeneficialOwnersSection";
 import DebitCardSection from "$app/components/Settings/PaymentsPage/DebitCardSection";
 import PayPalConnectSection, { PayPalConnect } from "$app/components/Settings/PaymentsPage/PayPalConnectSection";
 import PayPalEmailSection from "$app/components/Settings/PaymentsPage/PayPalEmailSection";
@@ -57,7 +58,6 @@ type PaymentsPageProps = {
   aus_backtax_details: AusBacktaxDetails & {
     show_au_backtax_prompt: boolean;
   };
-  show_verification_section: boolean;
   countries: Record<string, string>;
   ip_country_code: string | null;
   bank_account_details: BankAccountDetails;
@@ -97,6 +97,9 @@ type PaymentsPageProps = {
   payout_country_name: string | null;
   payout_frequency: PayoutFrequency;
   payout_frequency_daily_supported: boolean;
+  buyer_local_currency_enabled: boolean;
+  disable_buyer_local_currency: boolean;
+  can_manage_beneficial_owners: boolean;
   errors?: {
     base?: string[];
   };
@@ -109,8 +112,8 @@ type ErrorMessageInfo = {
 
 export default function PaymentsPage() {
   const page = usePage();
-  const props = cast<PaymentsPageProps>(page.props);
-  const errors = cast<{ base?: string[] } | undefined>(page.props.errors);
+  const props = typia.assert<PaymentsPageProps>(page.props);
+  const errors = typia.assert<{ base?: string[] } | undefined>(page.props.errors);
 
   const [clientErrorMessage, setClientErrorMessage] = React.useState<ErrorMessageInfo | null>(null);
   const formRef = React.useRef<HTMLDivElement & HTMLFormElement>(null);
@@ -118,12 +121,14 @@ export default function PaymentsPage() {
   const markFieldInvalid = (fieldName: FormFieldName) => setErrorFieldNames(new Set(errorFieldNames.add(fieldName)));
   const [isUpdateCountryConfirmed, setIsUpdateCountryConfirmed] = React.useState(false);
   const [isPayoutMethodChangeConfirmed, setIsPayoutMethodChangeConfirmed] = React.useState(false);
+  const [saveCounter, setSaveCounter] = React.useState(0);
 
   const form = useForm<{
     user: ComplianceInfo;
     payouts_paused_by_user: boolean;
     payout_threshold_cents: number | null;
     payout_frequency: PayoutFrequency;
+    disable_buyer_local_currency: boolean;
     bank_account: Partial<BankAccount> | null;
     payment_address: string | null;
   }>({
@@ -131,6 +136,7 @@ export default function PaymentsPage() {
     payouts_paused_by_user: props.payouts_paused_by_user,
     payout_threshold_cents: props.payout_threshold_cents,
     payout_frequency: props.payout_frequency,
+    disable_buyer_local_currency: props.disable_buyer_local_currency,
     bank_account: props.bank_account_details.bank_account,
     payment_address: props.paypal_address,
   });
@@ -195,6 +201,7 @@ export default function PaymentsPage() {
         payouts_paused_by_user: props.payouts_paused_by_user,
         payout_threshold_cents: props.payout_threshold_cents,
         payout_frequency: props.payout_frequency,
+        disable_buyer_local_currency: props.disable_buyer_local_currency,
         bank_account: props.bank_account_details.bank_account,
         payment_address: props.paypal_address,
       });
@@ -215,12 +222,11 @@ export default function PaymentsPage() {
     }
   }, [errors, clientErrorMessage]);
 
-  const isStreetAddressPOBox = (input: string) => {
-    return input
+  const isStreetAddressPOBox = (input: string) =>
+    input
       .replace(/[^\w]*/gu, "")
       .toLocaleLowerCase()
       .includes("pobox");
-  };
 
   const poBoxAddressErrorMessage = (countryCode: CountryCode) => {
     if (countryCode === "US") {
@@ -234,16 +240,13 @@ export default function PaymentsPage() {
     return "We require a valid physical address. We cannot accept a P.O. Box as a valid address.";
   };
 
-  const countryRequiresPhysicalAddress = (countryCode: CountryCode) => {
-    return ["US", "GH"].includes(countryCode);
-  };
+  const countryRequiresPhysicalAddress = (countryCode: CountryCode) => ["US", "GH"].includes(countryCode);
 
-  const isPhysicalAddressRequiredAndPOBox = (countryCode: CountryCode, input: string) => {
-    return countryRequiresPhysicalAddress(countryCode) && isStreetAddressPOBox(input);
-  };
+  const isPhysicalAddressRequiredAndPOBox = (countryCode: CountryCode, input: string) =>
+    countryRequiresPhysicalAddress(countryCode) && isStreetAddressPOBox(input);
 
   const validatePhoneNumber = (input: string | null, country_code: string | null) => {
-    const countryCode: CountryCode = cast(country_code);
+    const countryCode: CountryCode = typia.assert<CountryCode>(country_code);
     return input && parsePhoneNumberFromString(input, countryCode)?.isValid();
   };
 
@@ -387,6 +390,9 @@ export default function PaymentsPage() {
     }
     if (form.data.bank_account.type === "GuyanaBankAccount" && !form.data.bank_account.bank_code) {
       markFieldInvalid("bank_code");
+    }
+    if (form.data.bank_account.type === "GuyanaBankAccount" && !form.data.bank_account.branch_code) {
+      markFieldInvalid("branch_code");
     }
     if (form.data.bank_account.type === "GuatemalaBankAccount" && !form.data.bank_account.bank_code) {
       markFieldInvalid("bank_code");
@@ -593,12 +599,15 @@ export default function PaymentsPage() {
       !form.data.user.street_address ||
       (streetAddressValidationContextChanged &&
         form.data.user.country !== null &&
-        isPhysicalAddressRequiredAndPOBox(cast(form.data.user.country), form.data.user.street_address))
+        isPhysicalAddressRequiredAndPOBox(
+          typia.assert<CountryCode>(form.data.user.country),
+          form.data.user.street_address,
+        ))
     ) {
       markFieldInvalid("street_address");
       if (form.data.user.street_address) {
         setClientErrorMessage({
-          message: poBoxAddressErrorMessage(cast(form.data.user.country)),
+          message: poBoxAddressErrorMessage(typia.assert<CountryCode>(form.data.user.country)),
         });
       }
     }
@@ -645,11 +654,6 @@ export default function PaymentsPage() {
       }
       if (!form.data.user.business_name) {
         markFieldInvalid("business_name");
-      }
-      if (form.data.user.business_country === "CA") {
-        if (!form.data.user.job_title) {
-          markFieldInvalid("job_title");
-        }
       }
       if (form.data.user.business_country === "JP") {
         if (!form.data.user.business_name_kanji) {
@@ -705,12 +709,15 @@ export default function PaymentsPage() {
         !form.data.user.business_street_address ||
         (businessStreetAddressValidationContextChanged &&
           form.data.user.business_country !== null &&
-          isPhysicalAddressRequiredAndPOBox(cast(form.data.user.business_country), form.data.user.business_street_address))
+          isPhysicalAddressRequiredAndPOBox(
+            typia.assert<CountryCode>(form.data.user.business_country),
+            form.data.user.business_street_address,
+          ))
       ) {
         markFieldInvalid("business_street_address");
         if (form.data.user.business_street_address) {
           setClientErrorMessage({
-            message: poBoxAddressErrorMessage(cast(form.data.user.business_country)),
+            message: poBoxAddressErrorMessage(typia.assert<CountryCode>(form.data.user.business_country)),
           });
         }
       }
@@ -797,6 +804,7 @@ export default function PaymentsPage() {
         payouts_paused_by_user: data.payouts_paused_by_user,
         payout_threshold_cents: data.payout_threshold_cents,
         payout_frequency: data.payout_frequency,
+        disable_buyer_local_currency: data.disable_buyer_local_currency,
       };
 
       if (selectedPayoutMethod === "bank") {
@@ -812,6 +820,7 @@ export default function PaymentsPage() {
 
     form.put(Routes.settings_payments_path(), {
       preserveScroll: true,
+      onSuccess: () => setSaveCounter((counter) => counter + 1),
     });
   });
 
@@ -902,11 +911,7 @@ export default function PaymentsPage() {
         />
       ) : null}
       <form ref={formRef}>
-        <AccountStatusSection
-          accountStatus={props.account_status}
-          payoutsPausedBy={props.payouts_paused_by}
-          showVerificationSection={props.show_verification_section}
-        />
+        <AccountStatusSection accountStatus={props.account_status} payoutsPausedBy={props.payouts_paused_by} />
 
         {props.aus_backtax_details.show_au_backtax_prompt ? (
           <AusBackTaxesSection
@@ -1014,6 +1019,24 @@ export default function PaymentsPage() {
             )}
           </section>
         </FormSection>
+
+        {props.buyer_local_currency_enabled ? (
+          <FormSection header={<h2>Product pages</h2>}>
+            <Fieldset>
+              <Switch
+                checked={!form.data.disable_buyer_local_currency}
+                onChange={(e) => form.setData("disable_buyer_local_currency", !e.target.checked)}
+                aria-label="Show buyers their local currency on product pages"
+                disabled={props.is_form_disabled}
+                label="Show buyers their local currency on product pages"
+              />
+              <FieldsetDescription>
+                Buyers see an approximate price in their local currency in place of your set price. Checkout still uses
+                USD.
+              </FieldsetDescription>
+            </Fieldset>
+          </FormSection>
+        ) : null}
 
         <FormSection
           header={
@@ -1146,6 +1169,7 @@ export default function PaymentsPage() {
                 canadaBusinessTypes={props.canada_business_types}
                 states={props.states}
                 errorFieldNames={errorFieldNames}
+                saveCounter={saveCounter}
               />
             ) : (
               <StripeConnectSection
@@ -1155,6 +1179,15 @@ export default function PaymentsPage() {
               />
             )}
           </section>
+          {selectedPayoutMethod !== "stripe" && props.can_manage_beneficial_owners ? (
+            <BeneficialOwnersSection
+              countries={props.countries}
+              states={props.states}
+              defaultCountry={form.data.user.business_country ?? form.data.user.country}
+              minDobYear={props.min_dob_year}
+              isFormDisabled={props.is_form_disabled}
+            />
+          ) : null}
         </FormSection>
         {props.paypal_connect.show_paypal_connect ? (
           <PayPalConnectSection

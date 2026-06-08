@@ -15,6 +15,7 @@ class ProfilePresenter
       external_id: seller.external_id,
       avatar_url: seller.avatar_url,
       name: seller.name || seller.username,
+      twitter_handle: seller.twitter_handle,
       subdomain: seller.subdomain,
       is_verified: !!seller.verified,
     }
@@ -29,7 +30,7 @@ class ProfilePresenter
     shared_profile_props(seller_custom_domain_url: nil, request:, as_logged_out_user: true).merge(
       {
         profile_settings: {
-          username: seller.username,
+          username: seller.read_attribute(:username).to_s,
           name: seller.name,
           bio: seller.bio,
           font: seller.seller_profile.font,

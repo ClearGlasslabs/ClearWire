@@ -312,6 +312,142 @@ describe LinksController, :vcr, inertia: true do
       end
     end
 
+    describe "POST price_check" do
+      let(:product) { create(:product, user: seller) }
+
+      before { Flipper.enable(:price_checker) }
+
+      it_behaves_like "authorize called for action", :post, :price_check do
+        let(:record) { product }
+        let(:policy_method) { :edit? }
+        let(:request_params) { { id: product.unique_permalink } }
+      end
+
+      it "returns 404 when the price_checker feature flag is disabled" do
+        Flipper.disable(:price_checker)
+
+        post :price_check, params: { id: product.unique_permalink }
+
+        expect(response).to have_http_status(:not_found)
+      end
+
+      it "returns 504 when the service raises TimeoutError" do
+        expect(PriceCheckerService).to receive(:call).and_raise(PriceCheckerService::TimeoutError)
+
+        post :price_check, params: { id: product.unique_permalink }
+
+        expect(response).to have_http_status(:gateway_timeout)
+      end
+
+      it "returns the price distribution payload as JSON" do
+        payload = {
+          status: "ok",
+          tier: "broadened",
+          match_count: 25,
+          taxonomy_label: nil,
+          currency_code: "usd",
+          current_price_cents: product.price_cents,
+          summary: { median_cents: 1_500, p25_cents: 1_000, p75_cents: 2_500, mean_cents: 1_750 },
+          histogram: { interval_cents: 500, bins: [{ from_cents: 1_000, to_cents: 1_500, count: 5 }] },
+          computed_at: "2024-01-01T00:00:00Z",
+        }
+        expect(PriceCheckerService).to receive(:call).with(product: product, overrides: {}, force_refresh: false).and_return(payload)
+
+        post :price_check, params: { id: product.unique_permalink }
+
+        expect(response).to be_successful
+        expect(response.parsed_body).to include(
+          "status" => "ok",
+          "tier" => "broadened",
+          "match_count" => 25,
+        )
+      end
+
+      it "passes force_refresh when refresh param is present" do
+        expect(PriceCheckerService).to receive(:call).with(product: product, overrides: {}, force_refresh: true).and_return({})
+
+        post :price_check, params: { id: product.unique_permalink, refresh: "1" }
+
+        expect(response).to be_successful
+      end
+
+      it "passes sanitized overrides to the service" do
+        taxonomy = Taxonomy.find_or_create_by(slug: "films")
+        expect(PriceCheckerService).to receive(:call).with(
+          product: product,
+          overrides: {
+            name: "Edited title",
+            description: "Edited description",
+            taxonomy_id: taxonomy.id,
+            native_type: "digital",
+            currency_code: "eur",
+          },
+          force_refresh: false,
+        ).and_return({})
+
+        post :price_check, params: {
+          id: product.unique_permalink,
+          overrides: {
+            name: "  Edited title  ",
+            description: "Edited description",
+            taxonomy_id: taxonomy.id.to_s,
+            native_type: "digital",
+            currency_code: "EUR",
+          },
+        }
+
+        expect(response).to be_successful
+      end
+
+      it "drops an unknown currency_code override" do
+        expect(PriceCheckerService).to receive(:call).with(
+          product: product,
+          overrides: { name: "ok" },
+          force_refresh: false,
+        ).and_return({})
+
+        post :price_check, params: {
+          id: product.unique_permalink,
+          overrides: {
+            name: "ok",
+            currency_code: "xxx_not_a_currency",
+          },
+        }
+
+        expect(response).to be_successful
+      end
+
+      it "drops invalid overrides instead of erroring" do
+        expect(PriceCheckerService).to receive(:call).with(
+          product: product,
+          overrides: { name: "ok" },
+          force_refresh: false,
+        ).and_return({})
+
+        post :price_check, params: {
+          id: product.unique_permalink,
+          overrides: {
+            name: "ok",
+            taxonomy_id: 999_999_999,
+            native_type: "totally_not_a_type",
+          },
+        }
+
+        expect(response).to be_successful
+      end
+
+      context "when the user does not own the product" do
+        let(:other_user) { create(:user) }
+
+        before { sign_in other_user }
+
+        it "denies access" do
+          post :price_check, params: { id: product.unique_permalink }
+          expect(response).not_to be_successful
+        end
+      end
+    end
+
     describe "PUT update" do
       before do
         @product = create(:product_with_pdf_file, user: seller)
@@ -3319,6 +3455,58 @@ describe LinksController, :vcr, inertia: true do
         end
       end
 
+      describe "json format" do
+        it "returns the public product JSON representation" do
+          link = create(:product, user: @user, name: "Public API Product", price_cents: 600)
+
+          get :show, params: { id: link.to_param }, format: :json
+
+          expect(response).to be_successful
+          body = response.parsed_body
+          expect(body["api_version"]).to eq(ProductPresenter::PublicApiProps::API_VERSION)
+          expect(body["id"]).to eq(link.external_id)
+          expect(body["permalink"]).to eq(link.unique_permalink)
+          expect(body["name"]).to eq("Public API Product")
+          expect(body["price_cents"]).to eq(600)
+          expect(body["currency_code"]).to eq("usd")
+          expect(body["seller"]["name"]).to eq(@user.name_or_username)
+        end
+
+        it "does not leak buyer, admin, or analytics fields" do
+          link = create(:product, user: @user)
+
+          get :show, params: { id: link.to_param }, format: :json
+
+          body = response.parsed_body
+          %w[purchase buyer wishlists can_edit analytics has_third_party_analytics is_compliance_blocked admin_info].each do |forbidden|
+            expect(body).not_to have_key(forbidden)
+          end
+        end
+
+        it "omits sales_count unless the creator opts in" do
+          link = create(:product, user: @user, should_show_sales_count: false)
+
+          get :show, params: { id: link.to_param }, format: :json
+
+          expect(response.parsed_body["sales_count"]).to be_nil
+        end
+
+        it "returns JSON (not the custom-HTML landing page) for products with custom HTML" do
+          link = create(:product, user: @user, name: "Custom HTML Product")
+          link.update!(custom_html: "<h1>My custom landing page</h1>")
+          Feature.activate_user(:custom_html_pages, @user)
+
+          get :show, params: { id: link.to_param }, format: :json
+
+          expect(response).to be_successful
+          expect(response.media_type).to eq("application/json")
+          body = response.parsed_body
+          expect(body["api_version"]).to eq(ProductPresenter::PublicApiProps::API_VERSION)
+          expect(body["id"]).to eq(link.external_id)
+          expect(response.body).not_to include("My custom landing page")
+        end
+      end
+
       describe "wanted=true parameter" do
         it "passes pay_in_installments parameter to checkout when wanted=true" do
           get :show, params: { id: product.to_param, wanted: "true", pay_in_installments: "true" }
@@ -4571,6 +4759,30 @@ describe LinksController, :vcr, inertia: true do
           end.not_to change(DiscoverSearch, :count)
         end
       end
+    end
+  end
+
+  context "when signed in as a user without an email" do
+    let(:user) { create(:user, provider: :twitter, email: nil, unconfirmed_email: nil) }
+
+    before do
+      sign_in user
+      @request.env["warden"].session["last_sign_in_at"] = DateTime.current.to_i
+    end
+
+    it "redirects authenticated seller actions to the settings page" do
+      get :index
+      expect(response).to redirect_to(settings_main_path)
+    end
+
+    it "does not gate the public product page" do
+      seller = create(:user, :eligible_for_service_products)
+      product = create(:product, user: seller)
+      @request.host = URI.parse(seller.subdomain_with_protocol).host
+
+      get :show, params: { id: product.to_param }
+
+      expect(response).to be_successful
     end
   end
 end

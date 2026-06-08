@@ -91,6 +91,29 @@ describe Subscription::RestartAtCheckoutService do
         expect(transformed_params[:use_existing_card]).to be true
       end
 
+      it "uses the buyer identity when defaulting the perceived restart price" do
+        params_without_perceived_price = base_params.deep_dup
+        params_without_perceived_price[:purchase].delete(:perceived_price_cents)
+
+        expect(subscription).to receive(:current_subscription_price_cents).with(authenticated_offer_code_buyer: nil).and_return(10_00)
+        guest_params = described_class.new(
+          subscription: subscription,
+          product: product,
+          params: params_without_perceived_price,
+          buyer: nil
+        ).send(:updater_service_params)
+        expect(subscription).to receive(:current_subscription_price_cents).with(authenticated_offer_code_buyer: buyer).and_return(9_00)
+        buyer_params = described_class.new(
+          subscription: subscription,
+          product: product,
+          params: params_without_perceived_price,
+          buyer: buyer
+        ).send(:updater_service_params)
+
+        expect(guest_params[:perceived_price_cents]).to eq(10_00)
+        expect(buyer_params[:perceived_price_cents]).to eq(9_00)
+      end
+
       it "treats submitted checkout payment data as a new card" do
         params_with_stripe = ActionController::Parameters.new(
           base_params.deep_stringify_keys.merge(
@@ -507,7 +530,7 @@ describe Subscription::RestartAtCheckoutService do
           )
         end
 
-        it "returns an error" do
+        it "returns a seller-cancelled error when no new payment method is being attached" do
           result = described_class.new(
             subscription: subscription,
             product: product,
@@ -516,7 +539,7 @@ describe Subscription::RestartAtCheckoutService do
           ).perform
 
           expect(result[:success]).to be false
-          expect(result[:error_message]).to eq("This subscription cannot be restarted.")
+          expect(result[:error_message]).to eq("This membership was cancelled by the creator. To continue, please subscribe again from the product page.")
         end
       end
 
@@ -536,7 +559,7 @@ describe Subscription::RestartAtCheckoutService do
           product.update!(deleted_at: 1.hour.ago)
         end
 
-        it "returns an error" do
+        it "returns a product-unavailable error" do
           result = described_class.new(
             subscription: subscription,
             product: product,
@@ -545,7 +568,7 @@ describe Subscription::RestartAtCheckoutService do
           ).perform
 
           expect(result[:success]).to be false
-          expect(result[:error_message]).to eq("This subscription cannot be restarted.")
+          expect(result[:error_message]).to eq("This product is no longer available, so this membership can't be restarted.")
         end
       end
     end

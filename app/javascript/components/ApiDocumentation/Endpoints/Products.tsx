@@ -5,7 +5,7 @@ import CodeSnippet from "$app/components/ui/CodeSnippet";
 import { ApiEndpoint } from "../ApiEndpoint";
 import { ApiParameter, ApiParameters } from "../ApiParameters";
 import { ApiResponseFields, renderFields } from "../ApiResponseFields";
-import { PRODUCT_FIELDS, PRODUCT_LIST_FIELDS } from "../responseFieldDefinitions";
+import { CATEGORY_FIELDS, PRODUCT_FIELDS, PRODUCT_LIST_FIELDS } from "../responseFieldDefinitions";
 
 const ProductResponseFields = () => (
   <ApiResponseFields>
@@ -37,6 +37,15 @@ const SingleProductResponseFields = () => (
   </ApiResponseFields>
 );
 
+const CategoriesResponseFields = () => (
+  <ApiResponseFields>
+    {renderFields([
+      { name: "success", type: "boolean", description: "Whether the request succeeded" },
+      { name: "categories", type: "array", description: "Flat list of product categories", children: CATEGORY_FIELDS },
+    ])}
+  </ApiResponseFields>
+);
+
 const UpdateProductResponseFields = () => (
   <ApiResponseFields>
     {renderFields([
@@ -46,11 +55,158 @@ const UpdateProductResponseFields = () => (
         name: "warning",
         type: "string",
         description:
-          "Warning about offer codes that became invalid for the product (currency mismatch or below minimum price).",
-        condition: "present when at least one offer code is invalid after the update",
+          "Warning about offer codes that became invalid for the product, or custom HTML that has no buy element.",
+        condition: "present when there is an advisory warning after the update",
       },
     ])}
   </ApiResponseFields>
+);
+
+const CustomHtmlDocumentation = () => (
+  <div id="custom-html" className="grid gap-4">
+    <h4>Custom HTML landing pages</h4>
+    <p>
+      A product can have one custom HTML landing page, stored in its <code>custom_html</code> field. While it's set and
+      the product is published, buyers see it instead of the default product page. Authenticate with a Bearer token that
+      has the <code>edit_products</code> scope.
+    </p>
+    <ul>
+      <li>
+        <code>GET /v2/products/:id</code> returns the <code>custom_html</code> field.
+      </li>
+      <li>
+        <code>PUT /v2/products/:id</code> sets it; send <code>null</code> or an empty string to clear it.
+      </li>
+      <li>
+        <code>POST /v2/products/:id/preview_custom_html</code> returns the sanitized HTML and a sanitization report
+        without saving — use it to iterate before you publish.
+      </li>
+      <li>
+        Both <code>PUT</code> and preview return a <code>sanitization_report</code> listing what was stripped.
+      </li>
+      <li>
+        Both <code>PUT</code> and preview return a top-level <code>warning</code> if the custom HTML has no{" "}
+        <code>data-gumroad-action="buy"</code> element or <code>gumroad:checkout</code> postMessage.
+      </li>
+      <li>
+        A successful <code>PUT</code> also returns <code>previous_custom_html</code> (the prior value, for one-step
+        rollback) and the live <code>landing_url</code>.
+      </li>
+      <li>Only the latest version is stored — there's no history, so keep your source under version control.</li>
+      <li>The HTML is capped at 500,000 characters.</li>
+      <li>
+        Rate limits per token: 30 <code>PUT</code>s/min, 60 previews/min.
+      </li>
+    </ul>
+    <CodeSnippet caption="cURL example">
+      {`curl https://api.gumroad.com/v2/products/<permalink> \\
+  -X PUT \\
+  -H "Authorization: Bearer <user_api_token>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"custom_html":"<main><h1>My landing page</h1></main>"}'`}
+    </CodeSnippet>
+    <CodeSnippet caption="Gumroad CLI">
+      {`gumroad products page preview <permalink> ./landing.html
+gumroad products page publish <permalink> ./landing.html`}
+    </CodeSnippet>
+    <p>
+      Your HTML is sanitized — disallowed tags and attributes are stripped — then served inside a sandboxed iframe (
+      <code>sandbox="allow-scripts allow-forms"</code>).
+    </p>
+    <p>It can:</p>
+    <ul>
+      <li>Run inline JavaScript for animations, scroll effects, sticky headers, and modals.</li>
+      <li>Load scripts from the Tailwind, jsDelivr, and unpkg CDNs.</li>
+      <li>Load fonts from Google Fonts and Bunny Fonts.</li>
+      <li>Load images and media from Gumroad only — e.g. your product's covers and thumbnail.</li>
+      <li>Submit forms in-page with JavaScript.</li>
+    </ul>
+    <p>It can't:</p>
+    <ul>
+      <li>Read your Gumroad cookies or session — it runs on an opaque origin.</li>
+      <li>Touch or navigate the parent page, or open popups.</li>
+      <li>
+        Make <code>fetch</code>, <code>XHR</code>, or WebSocket requests (<code>connect-src 'none'</code>).
+      </li>
+      <li>Load images or media from any non-Gumroad host.</li>
+      <li>
+        Submit forms to external URLs — off-site <code>action</code> attributes are stripped.
+      </li>
+    </ul>
+    <p>
+      Every external load is restricted to Gumroad's CDN (images and media) or the named font and script CDNs above, so
+      the page has no arbitrary-host network channel — it can't beacon data off to a server you control.
+    </p>
+    <h5>Live values and buy buttons</h5>
+    <p>
+      Mark elements with data attributes that Gumroad fills in server-side so the page always shows current values and a
+      working checkout button:
+    </p>
+    <ul>
+      <li>
+        <code>data-gumroad-field="name|price|description"</code> — the element's contents are replaced with the
+        product's current value (HTML-escaped).
+      </li>
+      <li>
+        <code>data-gumroad-action="buy"</code> — wires the element up to launch the Gumroad checkout. Works on any tag (
+        <code>&lt;a&gt;</code>, <code>&lt;button&gt;</code>, <code>&lt;div&gt;</code>).
+      </li>
+    </ul>
+    <p>
+      For products with selection state, set the choice directly on the buy element. Invalid values silently fall back
+      to the product defaults — they won't break the page.
+    </p>
+    <ul>
+      <li>
+        <code>data-gumroad-option="&lt;variant name&gt;"</code> — products with variants/versions/tiers.
+      </li>
+      <li>
+        <code>data-gumroad-quantity="&lt;integer&gt;"</code> — products with quantity enabled.
+      </li>
+      <li>
+        <code>data-gumroad-price="&lt;decimal&gt;"</code> — pay-what-you-want products; major units (e.g.{" "}
+        <code>"9.99"</code>).
+      </li>
+      <li>
+        <code>data-gumroad-recurrence="monthly|quarterly|biannually|yearly|every_two_years"</code> —
+        membership/subscription products.
+      </li>
+    </ul>
+    <CodeSnippet caption="Example buy buttons">
+      {`<a data-gumroad-action="buy">Buy now</a>
+<a data-gumroad-action="buy" data-gumroad-option="Pro" data-gumroad-recurrence="yearly">Buy Pro – $99/year</a>
+<button data-gumroad-action="buy" data-gumroad-quantity="2">Buy 2 seats</button>`}
+    </CodeSnippet>
+  </div>
+);
+
+export const GetCategories = () => (
+  <ApiEndpoint
+    method="get"
+    path="/categories"
+    description="Retrieve the full product category list. Use a category's path as the category parameter when creating or updating products."
+  >
+    <CategoriesResponseFields />
+    <CodeSnippet caption="cURL example">
+      {`curl https://api.gumroad.com/v2/categories \\
+  -d "access_token=ACCESS_TOKEN" \\
+  -X GET`}
+    </CodeSnippet>
+    <CodeSnippet caption="Example response:">
+      {`{
+  "success": true,
+  "categories": [
+    {
+      "id": 123,
+      "name": "figma",
+      "label": "Figma",
+      "path": "design/ui-and-web/figma",
+      "parent_id": 122
+    }
+  ]
+}`}
+    </CodeSnippet>
+  </ApiEndpoint>
 );
 
 export const GetProducts = () => (
@@ -65,6 +221,7 @@ export const GetProducts = () => (
   -d "access_token=ACCESS_TOKEN" \\
   -X GET`}
     </CodeSnippet>
+    <CodeSnippet caption="Gumroad CLI">gumroad products list</CodeSnippet>
     <CodeSnippet caption="Example response:">
       {`{
   "success": true,
@@ -85,6 +242,9 @@ export const GetProducts = () => (
     "url": null, # Deprecated, always null
     "id": "A-m3CDDC5dlrSdKZp0RFhA==",
     "price": 100,
+    "taxonomy_id": 123,
+    "category": "design/ui-and-web/figma",
+    "category_label": "Figma",
     "purchasing_power_parity_prices": {
       "US": 100,
       "IN": 50,
@@ -142,6 +302,7 @@ export const GetProduct = () => (
   -d "access_token=ACCESS_TOKEN" \\
   -X GET`}
     </CodeSnippet>
+    <CodeSnippet caption="Gumroad CLI">gumroad products show A-m3CDDC5dlrSdKZp0RFhA==</CodeSnippet>
     <CodeSnippet caption="Example response:">
       {`{
   "success": true,
@@ -149,6 +310,7 @@ export const GetProduct = () => (
     "custom_permalink": null,
     "custom_receipt": null,
     "custom_summary": "You'll get one PSD file.",
+    "custom_html": null,
     "custom_fields": [],
     "customizable_price": null,
     "description": "I made this for fun.",
@@ -162,6 +324,9 @@ export const GetProduct = () => (
     "url": null, # Deprecated, always null
     "id": "A-m3CDDC5dlrSdKZp0RFhA==",
     "price": 100,
+    "taxonomy_id": 123,
+    "category": "design/ui-and-web/figma",
+    "category_label": "Figma",
     "purchasing_power_parity_prices": {
       "US": 100,
       "IN": 50,
@@ -241,7 +406,14 @@ export const CreateProduct = () => (
       <ApiParameter name="customizable_price" description="(optional, true or false) pay-what-you-want" />
       <ApiParameter name="suggested_price_cents" description="(optional)" />
       <ApiParameter name="max_purchase_count" description="(optional)" />
-      <ApiParameter name="taxonomy_id" description="(optional)" />
+      <ApiParameter
+        name="category"
+        description='(optional) full category path from GET /v2/categories, e.g. "design/ui-and-web/figma"; cannot be sent with taxonomy_id'
+      />
+      <ApiParameter
+        name="taxonomy_id"
+        description="(optional) numeric category ID; alias for category, cannot be sent with category"
+      />
       <ApiParameter name="tags" description="(optional) array of tag strings" />
       <ApiParameter name="custom_summary" description="(optional)" />
       <ApiParameter
@@ -269,7 +441,14 @@ export const CreateProduct = () => (
   -d "name=Pencil Icon PSD" \\
   -d "price=100" \\
   -d "price_currency_type=usd" \\
+  -d "category=design/ui-and-web/figma" \\
   -X POST`}
+    </CodeSnippet>
+    <CodeSnippet caption="Gumroad CLI">
+      {`gumroad products create --type digital \\
+  --name "Pencil Icon PSD" \\
+  --price 1.00 \\
+  --currency usd`}
     </CodeSnippet>
     <CodeSnippet caption="Example response:">
       {`{
@@ -279,6 +458,9 @@ export const CreateProduct = () => (
     "name": "Pencil Icon PSD",
     "price": 100,
     "currency": "usd",
+    "taxonomy_id": 123,
+    "category": "design/ui-and-web/figma",
+    "category_label": "Figma",
     "published": false,
     "files": [],
     "covers": [],
@@ -320,10 +502,21 @@ export const UpdateProduct = () => (
       <ApiParameter name="is_adult" description="(optional, true or false)" />
       <ApiParameter name="display_product_reviews" description="(optional, true or false)" />
       <ApiParameter name="should_show_sales_count" description="(optional, true or false)" />
-      <ApiParameter name="taxonomy_id" description="(optional)" />
+      <ApiParameter
+        name="category"
+        description='(optional) full category path from GET /v2/categories, e.g. "design/ui-and-web/figma"; cannot be sent with taxonomy_id'
+      />
+      <ApiParameter
+        name="taxonomy_id"
+        description="(optional) numeric category ID; alias for category, cannot be sent with category"
+      />
       <ApiParameter name="tags" description="(optional) array of tag strings; full replacement" />
       <ApiParameter name="custom_receipt" description="(optional)" />
       <ApiParameter name="custom_summary" description="(optional)" />
+      <ApiParameter
+        name="custom_html"
+        description="(optional) custom landing page HTML; null or empty string clears it"
+      />
       <ApiParameter name="cover_ids" description="(optional) array of cover GUIDs in display order" />
       <ApiParameter name="rich_content" description="(optional) array of pages; full replacement" />
       <ApiParameter
@@ -346,7 +539,13 @@ export const UpdateProduct = () => (
   -d "access_token=ACCESS_TOKEN" \\
   -d "name=Pencil Icon PSD v2" \\
   -d "max_purchase_count=100" \\
+  -d "category=design/ui-and-web/figma" \\
   -X PUT`}
+    </CodeSnippet>
+    <CodeSnippet caption="Gumroad CLI">
+      {`gumroad products update A-m3CDDC5dlrSdKZp0RFhA== \\
+  --name "Pencil Icon PSD v2" \\
+  --max-purchase-count 100`}
     </CodeSnippet>
     <CodeSnippet caption="Example response:">
       {`{
@@ -369,6 +568,7 @@ export const UpdateProduct = () => (
   }
 }`}
     </CodeSnippet>
+    <CustomHtmlDocumentation />
   </ApiEndpoint>
 );
 
@@ -379,6 +579,7 @@ export const DeleteProduct = () => (
   -d "access_token=ACCESS_TOKEN" \\
   -X DELETE`}
     </CodeSnippet>
+    <CodeSnippet caption="Gumroad CLI">gumroad products delete A-m3CDDC5dlrSdKZp0RFhA==</CodeSnippet>
     <CodeSnippet caption="Example response:">
       {`{
   "success": true,
@@ -396,6 +597,7 @@ export const EnableProduct = () => (
   -d "access_token=ACCESS_TOKEN" \\
   -X PUT`}
     </CodeSnippet>
+    <CodeSnippet caption="Gumroad CLI">gumroad products publish A-m3CDDC5dlrSdKZp0RFhA==</CodeSnippet>
     <CodeSnippet caption="Example response:">
       {`{
   "success": true,
@@ -473,6 +675,7 @@ export const DisableProduct = () => (
   -d "access_token=ACCESS_TOKEN" \\
   -X PUT`}
     </CodeSnippet>
+    <CodeSnippet caption="Gumroad CLI">gumroad products unpublish A-m3CDDC5dlrSdKZp0RFhA==</CodeSnippet>
     <CodeSnippet caption="Example response:">
       {`{
   "success": true,

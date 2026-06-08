@@ -2,14 +2,14 @@ import { Link, usePage } from "@inertiajs/react";
 import cx from "classnames";
 import * as React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { cast } from "ts-safe-cast";
+import typia from "typia";
 
 import { formatPostDate } from "$app/utils/date";
 
 import { BlogLayout } from "$app/components/GumroadBlog/Layout";
 import { Tabs, Tab } from "$app/components/ui/Tabs";
 
-import placeholderFeatureImage from "../../../../assets/images/blog/post-placeholder.jpg";
+import placeholderFeatureImage from "$assets/images/blog/post-placeholder.jpg";
 
 type TagProps = {
   name: string;
@@ -236,7 +236,7 @@ const TagSelector = ({
 };
 
 const IndexPage = () => {
-  const { posts } = cast<IndexPageProps>(usePage().props);
+  const { posts } = typia.assert<IndexPageProps>(usePage().props);
   const [activeTab, setActiveTab] = useState<string | null>(null);
 
   const featured_post = posts[0];

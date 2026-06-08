@@ -19,6 +19,7 @@ Rails.application.routes.draw do
   get "/healthcheck" => "healthcheck#index"
   get "/healthcheck/sidekiq" => "healthcheck#sidekiq"
   get "/healthcheck/paypal_balance" => "healthcheck#paypal_balance"
+  get "/healthcheck/purchases" => "healthcheck#purchases"
 
   use_doorkeeper do
     controllers applications: "oauth/applications"
@@ -26,6 +27,10 @@ Rails.application.routes.draw do
     controllers authorizations: "oauth/authorizations"
     controllers tokens: "oauth/tokens"
   end
+
+  post "/oauth/device/code" => "oauth/device_codes#create", as: :oauth_device_code
+  get "/oauth/device" => "oauth/device_authorizations#new", as: :oauth_device_authorization
+  post "/oauth/device" => "oauth/device_authorizations#create"
 
   namespace :oauth do
     resource :mobile_pre_authorization, only: [:new] do
@@ -45,6 +50,7 @@ Rails.application.routes.draw do
       post "files/presign", to: "files#presign"
       post "files/complete", to: "files#complete"
       post "files/abort", to: "files#abort"
+      post "direct_uploads", to: "direct_uploads#create"
       resources :licenses, only: [] do
         collection do
           post :verify
@@ -56,6 +62,8 @@ Rails.application.routes.draw do
       end
 
       get "/user", to: "users#show"
+      resources :categories, only: [:index]
+      resource :refund_policy, only: [:show, :update], controller: :refund_policies
       resources :links, path: "products", only: [:index, :show, :update, :create, :destroy] do
         resources :custom_fields, only: [:index, :create, :update, :destroy]
         resources :offer_codes, only: [:index, :create, :show, :update, :destroy]
@@ -70,8 +78,11 @@ Rails.application.routes.draw do
         member do
           put "disable"
           put "enable"
+          post "preview_custom_html"
         end
       end
+      post "sales/exports", to: "sales#export"
+      get "sales/summary", to: "sales#summary"
       resources :sales, only: [:index, :show] do
         member do
           put :mark_as_shipped
@@ -93,6 +104,25 @@ Rails.application.routes.draw do
       get "/tax_forms", to: "tax_forms#index"
       get "/tax_forms/:year/:tax_form_type/download", to: "tax_forms#download"
       get "/earnings", to: "earnings#show"
+
+      # Gumroad Walks iOS app. Two endpoints keep our OpenAI + Anthropic
+      # keys server-side: realtime_tokens issues a short-lived ek_... for
+      # the client to connect to OpenAI's WS directly, and synthesis is a
+      # one-shot proxy to Claude for post-walk product drafting.
+      #
+      # The app_attest sub-namespace is the device-identity bootstrap: the
+      # iOS client hits challenges to get a fresh server nonce, then
+      # attestations once per install to register its Secure-Enclave-attested
+      # key. After that, every realtime_tokens / synthesis call carries an
+      # assertion signed by that key (see WalksEntitlement).
+      namespace :walks do
+        resources :realtime_tokens, only: [:create]
+        post "synthesis", to: "synthesis#create"
+        namespace :app_attest do
+          resources :challenges, only: [:create]
+          resources :attestations, only: [:create]
+        end
+      end
     end
   end
 
@@ -303,7 +333,8 @@ Rails.application.routes.draw do
 
           resources :purchases, only: [:show] do
             collection do
-              post :search
+              get :search
+              get :lookup
               post :resend_all_receipts
               post :reassign
             end
@@ -320,36 +351,54 @@ Rails.application.routes.draw do
 
           resources :licenses, only: [] do
             collection do
-              post :lookup
+              get :lookup
             end
           end
 
           resources :users, only: [] do
             collection do
-              post :info
-              post :suspension
+              get :info
+              get :affiliates
+              get :comments
+              get :compliance_info
+              get :purchases
+              get :radar_stats
+              get :related
+              get :suspension
+              get :unpaid_balance
+              get :credits
               post :reset_password
               post :update_email
               post :two_factor_authentication
               post :create_comment
               post :mark_compliant
               post :suspend_for_fraud
+              post :suspend_for_tos_violation
+              post :flag_for_tos_violation
+              post :refund_balance
+              post :add_credit
+              post :watch
+              post :update_watch
+              post :unwatch
             end
           end
 
-          resources :payouts, only: [] do
+          resources :payouts, only: [:index] do
             collection do
-              post :list
               post :pause
               post :resume
               post :issue
-              post :scheduled_list
-            end
-            member do
-              post :scheduled_execute
-              post :scheduled_cancel
             end
           end
+
+          resources :scheduled_payouts, only: [:index, :create] do
+            member do
+              post :execute
+              post :cancel
+            end
+          end
+
+          resources :products, only: [:index, :show]
         end
 
         namespace :grmc do
@@ -440,6 +489,7 @@ Rails.application.routes.draw do
       get "logout", to: "logins#destroy"
       delete "logout", to: "logins#destroy"
       scope "/users" do
+        get "/check_twitter_link", to: "users/oauth#check_twitter_link"
         get "/unsubscribe/:id", to: "users#email_unsubscribe", as: :user_unsubscribe
         scope module: :users do
           get "subscribe_review_reminders", to: "review_reminders#subscribe", as: :user_subscribe_review_reminders
@@ -517,6 +567,11 @@ Rails.application.routes.draw do
         resources :access_tokens, only: :create, controller: "oauth/access_tokens"
       end
       get :profiles, to: redirect("/settings")
+      resource :connections, only: [] do
+        member do
+          post :unlink_twitter
+        end
+      end
     end
     namespace :settings do
       resource :main, only: %i[show update], path: "", controller: "main" do
@@ -542,6 +597,7 @@ Rails.application.routes.draw do
         get :paypal_connect
         post :remove_credit_card
       end
+      resources :beneficial_owners, only: %i[index create update destroy], defaults: { format: :json }
       resource :stripe, controller: :stripe, only: [] do
         collection do
           post :disconnect
@@ -562,8 +618,6 @@ Rails.application.routes.draw do
       end
       resource :dismiss_ai_product_generation_promo, only: [:create]
     end
-
-    resources :stripe_account_sessions, only: :create
 
     namespace :checkout do
       resources :discounts, only: %i[index create update destroy] do
@@ -781,6 +835,7 @@ Rails.application.routes.draw do
     get "/products/:id/edit", to: "links#edit", as: :edit_link
     get "/products/:id/edit/*other", to: "links#edit"
     get "/products/:id/card", to: "links#card", as: :product_card
+    post "/products/:id/price_check", to: "links#price_check", as: :price_check_product, defaults: { format: :json }
     get "/products/search", to: "links#search"
 
     namespace :integrations do
@@ -831,7 +886,12 @@ Rails.application.routes.draw do
     post "/dashboard/dismiss_getting_started_checklist" => "dashboard#dismiss_getting_started_checklist", as: :dashboard_dismiss_getting_started_checklist
 
     get "/products", to: "links#index", as: :products
+
     get "/l/:id", to: "links#show", defaults: { format: "html" }, as: :short_link
+    # Iframe content endpoint for products with custom_html. The two-segment
+    # path can't collide with the single-segment offer-code route below, so a
+    # seller's "landing" offer code keeps working.
+    get "/l/:id/landing/embed", to: "links#landing_iframe_content", as: :short_link_landing
     get "/l/:id/:code", to: "links#show", defaults: { format: "html" }, as: :short_link_offer_code
     get "/cart_items_count", to: "links#cart_items_count"
 
@@ -952,11 +1012,6 @@ Rails.application.routes.draw do
 
     resources :reviews, only: [:index]
 
-    resources :support, only: [:index] do
-      collection do
-        post :create_unauthenticated_ticket
-      end
-    end
 
     # url redirects
     get "/r/:id/expired", to: "url_redirects#expired", as: :url_redirect_expired_page
@@ -1004,6 +1059,7 @@ Rails.application.routes.draw do
           member do
             resource :audience_count, only: [:show], controller: "installments/audience_counts", as: :installment_audience_count
             resource :preview_email, only: [:create], controller: "installments/preview_emails", as: :installment_preview_email
+            resource :non_opener_resend, only: [:show, :create], controller: "installments/non_opener_resends", as: :installment_non_opener_resend
           end
           collection do
             resource :recipient_count, only: [:show], controller: "installments/recipient_counts", as: :installment_recipient_count
@@ -1043,6 +1099,7 @@ Rails.application.routes.draw do
     get "/CHARGE" => redirect("/charge")
 
     get "/install-cli.sh", to: redirect("https://raw.githubusercontent.com/antiwork/gumroad-cli/refs/heads/main/script/install.sh")
+    get "/docs/cli/pages", to: redirect("/api#custom-html")
 
     # discover
     get "/blackfriday", to: redirect("/discover?offer_code=BLACKFRIDAY2025"), as: :blackfriday
@@ -1129,6 +1186,7 @@ Rails.application.routes.draw do
 
     get "/", to: "links#show", defaults: { format: "html" }
     get "/l/:id", to: "links#show", defaults: { format: "html" }
+    get "/l/:id/landing/embed", to: "links#landing_iframe_content"
     get "/l/:id/:code", to: "links#show", defaults: { format: "html" }
     get "/:code", to: "links#show", defaults: { format: "html" }
   end
@@ -1153,6 +1211,7 @@ Rails.application.routes.draw do
     post "/affiliate_requests", to: "affiliate_requests#create", as: :custom_domain_create_affiliate_request
     get "/updates", to: redirect("/posts")
     get "/l/:id", to: "links#show", defaults: { format: "html" }
+    get "/l/:id/landing/embed", to: "links#landing_iframe_content"
     get "/l/:id/:code", to: "links#show", defaults: { format: "html" }
     get "/subscribe", to: "users#subscribe", as: :custom_domain_subscribe
     get "/follow", to: redirect("/subscribe")

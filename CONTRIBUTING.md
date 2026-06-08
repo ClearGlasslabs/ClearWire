@@ -27,6 +27,12 @@ Non-trivial PRs should follow this structure:
 - **Before/After** — Video is required for all PRs. For user-facing changes, show before/after with desktop and mobile, light and dark mode. For non-user-facing changes, include a short video walking through the relevant existing functionality.
 - **Test Results** — Screenshot of tests passing locally.
 
+Store screenshots and videos in `qa-media/` using the naming convention `pr-<number>-<description>.<ext>`. Reference them in PR descriptions with raw GitHub URLs:
+
+```markdown
+![description](https://raw.githubusercontent.com/antiwork/gumroad/<branch>/qa-media/pr-5160-pagination-page1.png)
+```
+
 End with an AI disclosure after a `---` separator. Name the specific model (e.g., "Claude Opus 4.6") and list the prompts given to the agent.
 
 ## AI models
@@ -61,6 +67,10 @@ git rebase origin/main
 ```
 
 Resolve conflicts locally before pushing. PRs with stale branches will not be merged.
+
+### Code review
+
+Claude Code Review is set to manual mode. After opening a PR, request a review by posting a `@claude review once` comment on the PR. This triggers an AI-powered review of your changes — it won't run automatically.
 
 ### Before pushing
 

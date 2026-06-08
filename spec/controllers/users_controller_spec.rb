@@ -97,12 +97,45 @@ describe UsersController do
       end
     end
 
-    it "returns user json when json request is sent" do
-      link = create(:product, user: create(:user, username: "creator"), name: "onelolol")
+    describe "json format" do
+      let(:creator_user) { create(:user, username: "creator", name: "Creator Name", bio: "My bio") }
 
-      @request.host = "creator.test.gumroad.com"
-      get :show, params: { username: "creator", format: "json" }
-      expect(response.parsed_body).to eq(link.user.as_json)
+      before { @request.host = "creator.test.gumroad.com" }
+
+      it "returns the public profile API payload" do
+        product = create(:product, user: creator_user, name: "onelolol")
+        section = create(:seller_profile_products_section, seller: creator_user, shown_products: [product.id])
+        creator_user.seller_profile.update!(
+          json_data: {
+            "tabs" => [
+              { "name" => "Products", "sections" => [section.id] },
+            ],
+          },
+        )
+        Link.import(force: true, refresh: true)
+
+        get :show, params: { username: "creator", format: "json" }
+
+        expect(response).to be_successful
+        body = response.parsed_body
+        expect(body["api_version"]).to eq(ProfilePresenter::PublicApiProps::API_VERSION)
+        expect(body["id"]).to eq(creator_user.external_id)
+        expect(body["username"]).to eq("creator")
+        expect(body["name"]).to eq("Creator Name")
+        expect(body["bio"]).to eq("My bio")
+        expect(body["products"].map { _1["name"] }).to include("onelolol")
+        expect(body["products"].first["id"]).to eq(product.external_id)
+      end
+
+      it "never leaks private seller fields" do
+        create(:product, user: creator_user)
+
+        get :show, params: { username: "creator", format: "json" }
+
+        expect(response.parsed_body.keys).not_to include(
+          "email", "password", "encrypted_password", "unpaid_balance_cents", "payment_address"
+        )
+      end
     end
 
     describe "redirection to subdomain for profile pages" do
@@ -117,6 +150,13 @@ describe UsersController do
           expect(response).to redirect_to @user.subdomain_with_protocol + "/?sort=price_asc"
           expect(response).to have_http_status(:moved_permanently)
         end
+
+        it "doesn't redirect JSON profile requests" do
+          get :show, params: { username: @user.username, format: "json" }
+
+          expect(response).to be_successful
+          expect(response.parsed_body["username"]).to eq(@user.username)
+        end
       end
 
       context "when the request is for the profile page on the custom domain" do
@@ -129,6 +169,24 @@ describe UsersController do
           get :show, params: { username: @user.username }
 
           expect(response).to be_successful
+        end
+
+        it "uses the custom domain in the public profile API payload" do
+          product = create(:product, user: @user)
+          section = create(:seller_profile_products_section, seller: @user, shown_products: [product.id])
+          @user.seller_profile.update!(
+            json_data: {
+              "tabs" => [
+                { "name" => "Products", "sections" => [section.id] },
+              ],
+            },
+          )
+          Link.import(force: true, refresh: true)
+
+          get :show, params: { username: @user.username, format: "json" }
+
+          expect(response.parsed_body["profile_url"]).to eq("http://example.com/")
+          expect(response.parsed_body["products"].first["url"]).to eq("http://example.com/l/#{product.general_permalink}")
         end
       end
 
@@ -238,6 +296,38 @@ describe UsersController do
 
         it "404s" do
           expect { get :show }.to raise_error(ActionController::RoutingError)
+        end
+      end
+
+      describe "facebook-domain-verification meta tag" do
+        before do
+          @user = create(:user, username: "fbverify")
+          create(:product, user: @user)
+          CustomDomain.create(domain: "fb-verify.example.com", user: @user)
+          @request.host = "fb-verify.example.com"
+        end
+
+        it "renders the meta tag with the content extracted from the seller's facebook_meta_tag" do
+          @user.update!(
+            enable_verify_domain_third_party_services: true,
+            facebook_meta_tag: '<meta name="facebook-domain-verification" content="abc123verifycode" />'
+          )
+
+          get :show
+
+          expect(response.body).to include('content="abc123verifycode"')
+          expect(response.body).not_to include('<meta name="facebook-domain-verification" inertia=')
+        end
+
+        it "does not render the meta tag when domain verification is disabled" do
+          @user.update!(
+            enable_verify_domain_third_party_services: false,
+            facebook_meta_tag: '<meta name="facebook-domain-verification" content="abc123verifycode" />'
+          )
+
+          get :show
+
+          expect(response.body).not_to include('name="facebook-domain-verification"')
         end
       end
     end

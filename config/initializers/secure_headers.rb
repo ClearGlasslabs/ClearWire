@@ -73,6 +73,9 @@ SecureHeaders::Configuration.default do |config|
       "analytics.google.com",
       "*.analytics.google.com",
 
+      # tiktok pixel
+      "analytics.tiktok.com",
+
       # cloudfront
       FILE_DOWNLOAD_DISTRIBUTION_URL,
       HLS_DISTRIBUTION_URL,
@@ -85,6 +88,7 @@ SecureHeaders::Configuration.default do |config|
 
       # oembeds - rich text editor
       "iframe.ly",
+      "iframely.net",
 
       # helper widget
       "help.gumroad.com",
@@ -106,7 +110,6 @@ SecureHeaders::Configuration.default do |config|
       # stripe frontend tokenization
       "js.stripe.com",
       "api.stripe.com",
-      "connect-js.stripe.com",
 
       # braintree
       "*.braintreegateway.com",
@@ -155,6 +158,9 @@ SecureHeaders::Configuration.default do |config|
       # twitter
       "analytics.twitter.com",
 
+      # tiktok pixel
+      "analytics.tiktok.com",
+
       # helper widget
       "help.gumroad.com",
 
@@ -184,9 +190,6 @@ SecureHeaders::Configuration.default do |config|
   # Required by AnyCable
   config.csp[:connect_src] << "wss://#{ANYCABLE_HOST}"
 
-  # Required for realtime events in Helper widget
-  config.csp[:connect_src] << "wss://#{ENV["HELPER_SUPABASE_DOMAIN"]}" if ENV["HELPER_SUPABASE_DOMAIN"].present?
-
   if Rails.application.config.asset_host.present?
     config.csp[:connect_src] << Rails.application.config.asset_host
     config.csp[:script_src] << Rails.application.config.asset_host
@@ -195,22 +198,22 @@ SecureHeaders::Configuration.default do |config|
 
   if Rails.env.test?
     config.csp[:default_src] = ["'self'"]
-    config.csp[:style_src] << "blob:" # Required by Shakapacker to serve CSS
+    config.csp[:style_src] << "blob:" # Required to serve CSS as blob URLs in tests
     config.csp[:script_src] << "test-custom-domain.gumroad.com:#{URI("#{PROTOCOL}://#{DOMAIN}").port}" # To allow loading widget scripts from the custom domain
     config.csp[:script_src] << ROOT_DOMAIN # Required to load gumroad.js for overlay/embed.
     config.csp[:connect_src] << "ws://#{ANYCABLE_HOST}:8080" # Required by AnyCable
     config.csp[:connect_src] << "wss://#{ANYCABLE_HOST}:8080" # Required by AnyCable
   elsif Rails.env.development?
     config.csp[:default_src] = ["'self'"]
-    config.csp[:style_src] << "blob:" # Required by Shakapacker to serve CSS
-    config.csp[:script_src] << "gumroad.dev:3035" # Required by webpack-dev-server
-    config.csp[:connect_src] << "gumroad.dev:3035" # Required by webpack-dev-server
-    config.csp[:connect_src] << "wss://gumroad.dev:3035" # Required by webpack-dev-server
-    config.csp[:connect_src] << "wss://#{ANYCABLE_HOST}:8081" # Required by AnyCable
-    config.csp[:connect_src] << "helperai.dev" # Required by Helper widget
-    config.csp[:connect_src] << "wss://supabase.helperai.dev" # Required by Helper widget
+    %w[localhost app.localhost].each do |host|
+      config.csp[:script_src] << "#{host}:3036" # Vite dev server
+      config.csp[:connect_src] << "#{host}:3036" # Vite dev server
+      config.csp[:connect_src] << "ws://#{host}:3036" # Vite HMR websocket
+    end
+    cable_scheme = PROTOCOL == "https" ? "wss" : "ws"
+    cable_port = PROTOCOL == "https" ? 8081 : 8080
+    config.csp[:connect_src] << "#{cable_scheme}://#{ANYCABLE_HOST}:#{cable_port}" # Required by AnyCable
     config.csp[:connect_src] << "http:"
-    config.csp[:script_src] << "http:" # Required by Helper widget
-    config.csp[:script_src] << "helperai.dev" # Required by Helper widget
+    config.csp[:script_src] << "http:"
   end
 end

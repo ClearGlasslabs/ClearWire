@@ -277,6 +277,44 @@ RSpec.describe ContentModeration::Strategies::PromptStrategy, :vcr do
       expect(result.status).to eq("compliant")
       expect(Rails.logger).to have_received(:warn).with(/uncertainty check timeout.*Faraday::ServerError/)
     end
+
+    it "returns compliant when OpenAI proxy returns a non-JSON body causing Faraday::ParsingError" do
+      allow(client).to receive(:chat).and_raise(Faraday::ParsingError.new(StandardError.new("unexpected token at 'upstream connect error'")))
+
+      result = described_class.new(text: "moderate me").perform
+
+      expect(result.status).to eq("compliant")
+      expect(result.reasoning).to eq([])
+      expect(Rails.logger).to have_received(:warn).with(/preset timeout on adult_content.*Faraday::ParsingError/)
+    end
+
+    it "skips the flagged result when the uncertainty check gets a Faraday::ParsingError" do
+      call_count = 0
+      allow(client).to receive(:chat) do |_kwargs|
+        call_count += 1
+        case call_count
+        when 1 then json_chat_response(flagged: true, reasoning: "looks explicit")
+        when 2 then raise Faraday::ParsingError.new(StandardError.new("unexpected token at 'upstream connect error'"))
+        else json_chat_response(flagged: false, reasoning: "")
+        end
+      end
+
+      result = described_class.new(text: "moderate me").perform
+
+      expect(result.status).to eq("compliant")
+      expect(Rails.logger).to have_received(:warn).with(/uncertainty check timeout.*Faraday::ParsingError/)
+    end
+  end
+
+  # Pins the affiliate-recruitment language in SPAM_RULES so a future prompt
+  # refactor can't silently drop the carveout that lets affiliate emails
+  # mention commissions / earnings without being flagged as MLM spam.
+  describe "SPAM_RULES (affiliate recruitment carveout)" do
+    it "tells the model that affiliate recruitment emails are legitimate" do
+      expect(described_class::SPAM_RULES).to include("affiliate recruitment email")
+      expect(described_class::SPAM_RULES).to include("earn a commission")
+      expect(described_class::SPAM_RULES).to include("MLM red flags")
+    end
   end
 
   def json_chat_response(payload)

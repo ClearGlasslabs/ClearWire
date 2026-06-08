@@ -30,7 +30,7 @@ export type UserMembership = {
   created_at: string;
 };
 
-type BlockedObject = {
+type PlatformBlock = {
   blocked_at: string | null;
   created_at: string;
 };
@@ -45,18 +45,36 @@ export type ActiveWatchedUser = {
   created_at: string;
 };
 
+export type RadarStats = {
+  successful_purchases: number;
+  efw_count: number;
+  efw_by_fraud_type: Record<string, number>;
+  efw_with_elevated_risk: number;
+  efw_with_highest_risk: number;
+  dispute_count: number;
+  dispute_rate: number;
+};
+
+export type RecentEfw = {
+  purchase_id: string | null;
+  fraud_type: string;
+  charge_risk_level: string;
+  resolution: string;
+  created_at: string;
+};
+
 export type User = {
   external_id: string;
-  email: string;
+  email: string | null;
   support_email?: string | null;
   name: string | null;
   avatar_url: string;
   username: string;
   profile_url: string;
-  form_email: string;
-  blocked_by_form_email_object: BlockedObject | null;
-  form_email_domain: string;
-  blocked_by_form_email_domain_object: BlockedObject | null;
+  form_email: string | null;
+  blocked_by_form_email_object: PlatformBlock | null;
+  form_email_domain: string | null;
+  blocked_by_form_email_domain_object: PlatformBlock | null;
   subdomain_with_protocol: string;
   custom_fee_per_thousand: number | null;
   impersonatable: boolean;
@@ -79,6 +97,8 @@ export type User = {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  radar_stats?: RadarStats | null;
+  recent_efws?: RecentEfw[] | null;
 };
 
 export type Props = {

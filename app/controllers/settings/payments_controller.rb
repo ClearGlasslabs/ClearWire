@@ -15,6 +15,24 @@ class Settings::PaymentsController < Settings::BaseController
     end
     return unless current_seller.fetch_or_build_user_compliance_info.country.present?
 
+    # Block requests that would *change* a country field to a US outlying area, but allow
+    # unmigrated territory sellers (e.g. country: "Puerto Rico") to submit other settings
+    # changes — their form echoes back the current country value, which must not be
+    # treated as an attempted bypass. See issue gumroad-private#394.
+    current_uci = current_seller.alive_user_compliance_info
+    attempted_territory_change = [
+      [params.dig(:user, :updated_country_code), current_uci&.legal_entity_country_code],
+      [params.dig(:user, :country),              current_uci&.country_code],
+      [params.dig(:user, :business_country),     current_uci&.business_country_code],
+    ].any? do |submitted, current|
+      submitted.present? &&
+        submitted != current &&
+        Compliance::Countries::US_OUTLYING_AREA_ALPHA2.include?(submitted)
+    end
+    if attempted_territory_change
+      return redirect_with_error("US outlying areas (Puerto Rico, Guam, US Virgin Islands, etc.) are not valid compliance countries. Select United States and your territory as state.")
+    end
+
     compliance_info = current_seller.fetch_or_build_user_compliance_info
 
     updated_country_code = params.dig(:user, :updated_country_code)
@@ -71,7 +89,7 @@ class Settings::PaymentsController < Settings::BaseController
     end
 
     unless current_seller.update(
-      params.permit(:payouts_paused_by_user, :payout_threshold_cents, :payout_frequency)
+      params.permit(:payouts_paused_by_user, :payout_threshold_cents, :payout_frequency, :disable_buyer_local_currency)
     )
       return redirect_with_error(current_seller.errors.full_messages.first)
     end
@@ -103,6 +121,7 @@ class Settings::PaymentsController < Settings::BaseController
   def set_country
     compliance_info = current_seller.fetch_or_build_user_compliance_info
     return head :forbidden if compliance_info.country.present?
+    return head :forbidden if Compliance::Countries::US_OUTLYING_AREA_ALPHA2.include?(params[:country])
 
     compliance_info.dup_and_save! do |new_compliance_info|
       new_compliance_info.country = ISO3166::Country[params[:country]]&.common_name
@@ -158,7 +177,12 @@ class Settings::PaymentsController < Settings::BaseController
   def remediation
     authorize
 
-    if current_seller.stripe_account.blank? || current_seller.user_compliance_info_requests.requested.blank?
+    if current_seller.stripe_account.blank?
+      redirect_to settings_payments_path, notice: "Thanks! You're all set." and return
+    end
+
+    has_local_requests = current_seller.user_compliance_info_requests.requested.exists?
+    if !has_local_requests && !stripe_account_has_open_requirements?(current_seller.stripe_account)
       redirect_to settings_payments_path, notice: "Thanks! You're all set." and return
     end
 
@@ -166,23 +190,36 @@ class Settings::PaymentsController < Settings::BaseController
                                              account: current_seller.stripe_account.charge_processor_merchant_id,
                                              refresh_url: remediation_settings_payments_url,
                                              return_url: verify_stripe_remediation_settings_payments_url,
-                                             type: "account_onboarding",
+                                             type: "account_update",
                                            }).url, allow_other_host: true
+  rescue Stripe::InvalidRequestError => e
+    sync_stripe_disabled_reason(current_seller.stripe_account) if current_seller.stripe_account.stripe_disabled_reason.blank?
+    ErrorNotifier.notify(e, context: { user_id: current_seller.id })
+    redirect_to settings_payments_path, alert: "We couldn't open the verification page. Please contact support."
   end
 
   def verify_stripe_remediation
     safe_redirect_to settings_payments_path and return if current_seller.stripe_account.blank?
 
     stripe_account = Stripe::Account.retrieve(current_seller.stripe_account.charge_processor_merchant_id)
+    requirements = stripe_account["requirements"] || {}
+    future_requirements = stripe_account["future_requirements"] || {}
 
-    if stripe_account["requirements"]["currently_due"].blank? && stripe_account["requirements"]["past_due"].blank?
+    hard_requirements_clear = requirements["currently_due"].blank? && requirements["past_due"].blank?
+    if hard_requirements_clear
       # We're marking the pending compliance request as provided on our end here if it is no longer due on Stripe.
       # We'll get a account.updated webhook event and mark these requests as provided there as well,
       # but doing it here instead of waiting on the webhook, so that the respective compliance request notice is removed
       # from the page immediately.
       current_seller.user_compliance_info_requests.requested.each(&:mark_provided!)
-      flash[:notice] = "Thanks! You're all set."
     end
+
+    nothing_open_on_stripe = hard_requirements_clear &&
+                             requirements["eventually_due"].blank? &&
+                             future_requirements["currently_due"].blank? &&
+                             future_requirements["past_due"].blank? &&
+                             future_requirements["eventually_due"].blank?
+    flash[:notice] = "Thanks! You're all set." if nothing_open_on_stripe
 
     safe_redirect_to settings_payments_path
   end
@@ -242,5 +279,29 @@ class Settings::PaymentsController < Settings::BaseController
 
     def current_seller_policy
       [:settings, :payments, current_seller]
+    end
+
+    def sync_stripe_disabled_reason(merchant_account)
+      stripe_account = Stripe::Account.retrieve(merchant_account.charge_processor_merchant_id)
+      disabled_reason = stripe_account["requirements"]["disabled_reason"]
+      merchant_account.update!(stripe_disabled_reason: disabled_reason) if disabled_reason.present?
+    rescue Stripe::StripeError, ActiveRecord::ActiveRecordError
+    end
+
+    def stripe_account_has_open_requirements?(merchant_account)
+      stripe_account = Stripe::Account.retrieve(merchant_account.charge_processor_merchant_id)
+      requirements = stripe_account["requirements"] || {}
+      future_requirements = stripe_account["future_requirements"] || {}
+      [
+        requirements["currently_due"],
+        requirements["past_due"],
+        requirements["eventually_due"],
+        future_requirements["currently_due"],
+        future_requirements["past_due"],
+        future_requirements["eventually_due"],
+      ].any?(&:present?)
+    rescue Stripe::StripeError => e
+      ErrorNotifier.notify(e, context: { user_id: current_seller.id })
+      false
     end
 end

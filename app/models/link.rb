@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "zip/zipfilesystem"
+require "zip/filesystem"
 
 class Link < ApplicationRecord
   has_paper_trail
@@ -91,6 +91,17 @@ class Link < ApplicationRecord
   has_many :prices
   has_many :alive_prices, -> { alive }, class_name: "Price"
   has_one :installment_plan, -> { alive }, class_name: "ProductInstallmentPlan"
+  has_one :page, as: :pageable, dependent: :destroy, autosave: true
+  delegate :custom_html, to: :page, allow_nil: true
+
+  def custom_html=(value)
+    if value.blank?
+      page.custom_html = nil if page.present?
+      return
+    end
+
+    (page || build_page).custom_html = value
+  end
   has_many :sales, class_name: "Purchase"
   has_many :orders, through: :sales, source: :order
   has_many :sold_calls, through: :sales, source: :call
@@ -230,6 +241,11 @@ class Link < ApplicationRecord
   rescue ArgumentError
     super(:buy_only)
   end
+
+  def price_currency_type=(value)
+    super(value.present? ? value.to_s.downcase : value)
+  end
+
   enum free_trial_duration_unit: %i[week month]
 
   attr_json_data_accessor :excluded_sales_tax_regions, default: -> { [] }
@@ -237,6 +253,8 @@ class Link < ApplicationRecord
   attr_json_data_accessor :main_section_index, default: -> { 0 }
   attr_json_data_accessor :custom_view_content_button_text
   attr_json_data_accessor :custom_receipt_text
+  attr_json_data_accessor :content_moderation_disabled, default: -> { false }
+  alias_method :content_moderation_disabled?, :content_moderation_disabled
 
   scope :alive,                           -> { where(purchase_disabled_at: nil, banned_at: nil, deleted_at: nil) }
   scope :visible,                         -> { where(deleted_at: nil) }
@@ -396,6 +414,7 @@ class Link < ApplicationRecord
 
   def delete!
     mark_deleted!
+    clear_featured_product_sections!
     custom_domain&.mark_deleted!
     alive_public_files.update_all(scheduled_for_deletion_at: 10.minutes.from_now)
     CancelSubscriptionsForProductWorker.perform_in(10.minutes, id) if subscriptions.active.present?
@@ -544,7 +563,7 @@ class Link < ApplicationRecord
 
   def for_email_thumbnail_url
     thumbnail_alive&.url ||
-      ActionController::Base.helpers.asset_url("native_types/thumbnails/#{native_type}.png")
+      ActionController::Base.helpers.image_url("native_types/thumbnails/#{native_type}.png")
   end
 
   def plaintext_description
@@ -570,9 +589,15 @@ class Link < ApplicationRecord
   end
 
   def social_share_text
-    return "I pre-ordered #{name} on @Gumroad" if is_in_preorder_state
+    if user.twitter_handle.present?
+      return "I pre-ordered #{name} from @#{user.twitter_handle} on @Gumroad" if is_in_preorder_state
 
-    "I got #{name} on @Gumroad"
+      "I got #{name} from @#{user.twitter_handle} on @Gumroad"
+    else
+      return "I pre-ordered #{name} on @Gumroad" if is_in_preorder_state
+
+      "I got #{name} on @Gumroad"
+    end
   end
 
   def self.human_attribute_name(attr, _)
@@ -606,12 +631,17 @@ class Link < ApplicationRecord
     return tiers.first.quantity_left if tiers.size == 1
 
     minimum_bundle_product_quantity_left = if is_bundle?
-      bundle_products.alive.flat_map do
+      alive_bundles = if bundle_products.loaded?
+        bundle_products.select(&:alive?)
+      else
+        bundle_products.alive
+      end
+      alive_bundles.flat_map do
         [_1.product.remaining_for_sale_count, _1.variant&.quantity_left]
       end.compact.min
     end
 
-    product_quantity_left = (max_purchase_count - sales_count_for_inventory) unless max_purchase_count.nil?
+    product_quantity_left = (max_purchase_count - sales_count_for_inventory.to_i) unless max_purchase_count.nil?
 
     quantity_left = [product_quantity_left, minimum_bundle_product_quantity_left].compact.min
     return if quantity_left.nil?
@@ -653,7 +683,12 @@ class Link < ApplicationRecord
   end
 
   def rental
-    purchase_type != "buy_only" ? { price_cents: rental_price_cents, rent_only: purchase_type == "rent_only" } : nil
+    return unless rentable?
+
+    price_cents = rental_price_cents
+    return if price_cents.nil?
+
+    { price_cents:, rent_only: rent_only? }
   end
 
   def is_legacy_subscription?
@@ -1036,7 +1071,12 @@ class Link < ApplicationRecord
   end
 
   def has_customizable_price_option?
-    is_tiered_membership? ? tiers.alive.exists?(customizable_price: true) : customizable_price?
+    return customizable_price? unless is_tiered_membership?
+    if association(:tiers).loaded?
+      tiers.any? { |t| t.alive? && t.customizable_price? }
+    else
+      tiers.alive.exists?(customizable_price: true)
+    end
   end
 
   def recurrence_price_enabled?(recurrence)
@@ -1316,6 +1356,17 @@ class Link < ApplicationRecord
     end
 
   private
+    # When a product is soft-deleted, clear any references to it from
+    # SellerProfileFeaturedProductSection.featured_product_id (a JSON column).
+    # Without this, the section's cached props would point at a missing product
+    # and crash the seller's profile page until the cache TTL elapsed.
+    def clear_featured_product_sections!
+      SellerProfileFeaturedProductSection
+        .where(seller_id: user_id)
+        .where('CAST(JSON_EXTRACT(json_data, "$.featured_product_id") AS UNSIGNED) = ?', id)
+        .find_each { |section| section.update!(json_data: section.json_data.except("featured_product_id")) }
+    end
+
     def compute_ppp_prices(price_cents, factors, currency)
       factors.keys.index_with do |country_code|
         price_cents == 0 ? 0 : [factors[country_code] * price_cents, currency["min_price"]].max.round
@@ -1388,7 +1439,8 @@ class Link < ApplicationRecord
         if %w[strong b em u s h1 h2 h3 h4 h5 h6 pre code ul ol li hr blockquote p a figure figcaption img div span iframe script br upsell-card public-file-embed review-card].exclude?(node.name) && !node.text?
           node.remove
         elsif node.name == "iframe"
-          if node["src"].present? && (URI.parse(node["src"]) rescue nil)&.host == "cdn.iframe.ly"
+          iframe_host = (URI.parse(node["src"]) rescue nil)&.host if node["src"].present?
+          if %w[cdn.iframe.ly iframely.net].include?(iframe_host)
             node.attributes.each do |attr|
               node.remove_attribute(attr.first) unless %w[src frameborder allowfullscreen scrolling allow style].include?(attr.first)
             end

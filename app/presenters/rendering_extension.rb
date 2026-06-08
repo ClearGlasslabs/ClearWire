@@ -26,6 +26,7 @@ module RenderingExtension
       feature_flags: {
         require_email_typo_acknowledgment: Feature.active?(:require_email_typo_acknowledgment),
         disable_stripe_signup: Feature.active?(:disable_stripe_signup),
+        career_pages: Feature.active?(:career_pages),
       }
     }
   end
@@ -92,6 +93,7 @@ module RenderingExtension
           show: Pundit.policy!(pundit_user, [:settings, :payments, pundit_user.seller]).show?,
         },
         settings_profile: {
+          manage_social_connections: Pundit.policy!(pundit_user, [:settings, :profile]).manage_social_connections?,
           update: Pundit.policy!(pundit_user, [:settings, :profile]).update?,
           update_username: Pundit.policy!(pundit_user, [:settings, :profile]).update_username?
         },

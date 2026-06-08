@@ -10,6 +10,25 @@ module Compliance
       ISO3166::Country.all.to_h { |country| [country.alpha2, country.common_name] }
     end
 
+    def self.alpha2_by_name
+      @alpha2_by_name ||= begin
+        result = {}
+        all = ISO3166::Country.all
+        all.each do |country|
+          [country.common_name, country.iso_short_name, country.iso_long_name].compact.each do |name|
+            result[name.downcase] ||= country.alpha2
+          end
+        end
+        all.each do |country|
+          country.unofficial_names&.each { |name| result[name.downcase] ||= country.alpha2 }
+        end
+        all.each do |country|
+          country.data["gumroad_historical_names"]&.each { |name| result[name.downcase] ||= country.alpha2 }
+        end
+        result.freeze
+      end
+    end
+
     def self.find_by_name(country_name)
       return if country_name.blank?
       ISO3166::Country.find_country_by_any_name(country_name)
@@ -20,24 +39,13 @@ module Compliance
       return [] if country.nil?
       ([country.common_name] + (country.data["gumroad_historical_names"] || [])).uniq
     end
-    # This list would be updated according to changes in OFAC regulation.
+    # This list reflects countries under comprehensive OFAC sanctions.
+    # Targeted SDN-list screening on individuals/entities is enforced
+    # separately and is not based on country of residence.
     BLOCKED_COUNTRY_CODES = [
-      AFG, # Afghanistan
       CUB, # Cuba
-      COD, # Congo, the Democratic Republic of the
-      CIV, # Côte d'Ivoire
-      IRQ, # Iraq
       IRN, # Iran
-      LBN, # Lebanon
-      LBR, # Liberia
-      LBY, # Libya
-      MMR, # Myanmar
       PRK, # North Korea
-      SOM, # Somalia
-      SDN, # Sudan
-      SYR, # Syrian Arabic Republic
-      YEM, # Yemen
-      ZWE, # Zimbabwe
     ].map(&:alpha2).freeze
     private_constant :BLOCKED_COUNTRY_CODES
 
@@ -63,12 +71,29 @@ module Compliance
       RISK_PHYSICAL_BLOCKED_COUNTRY_CODES.include?(alpha2)
     end
 
+    # Subset of ISO 3166-1 codes that are US outlying areas (territories). These are not separate
+    # countries for Gumroad's compliance purposes — sellers and buyers from these locations enter
+    # the US country path with the territory as the `state`. Filtered out of the seller-side
+    # compliance country dropdown via `for_select_for_seller_compliance` so the catch-22 in
+    # issue #394 cannot recur for new signups.
+    US_OUTLYING_AREA_ALPHA2 = %w[AS GU MP PR UM VI].freeze
+
     def self.for_select
       ISO3166::Country.all.map do |country|
         name = blocked?(country.alpha2) ? "#{country.common_name} (not supported)" : country.common_name
         [country.alpha2, name]
       end.sort_by { |pair| pair.last }
     end
+
+    # Same shape as `for_select`, but excludes US outlying areas because they are entered as US
+    # addresses with a territory state code. Used by seller-facing settings pages (compliance,
+    # billing) so sellers cannot pick a territory as their country and end up in the issue #394
+    # catch-22. Buyer-facing flows (checkout, invoice, customer addresses) should continue to use
+    # `for_select` because foreign billing addresses to these territories can be legitimate.
+    def self.for_select_for_seller_compliance
+      for_select.reject { |alpha2, _name| US_OUTLYING_AREA_ALPHA2.include?(alpha2) }
+    end
+
     GLOBE_SHOWING_AMERICAS_EMOJI = [127758].pack("U*")
     private_constant :GLOBE_SHOWING_AMERICAS_EMOJI
 
@@ -145,12 +170,23 @@ module Compliance
       end
     end
 
+    # Puerto Rico is exposed in the US state dropdown because Stripe Connect onboards PR sellers under
+    # `country: "US"` with `state: "PR"`. The other US outlying areas (AS, GU, MP, UM, VI) are NOT in
+    # this allowlist because Stripe explicitly rejects them with "Stripe currently does not support US
+    # insular areas and freely associated states" — adding them would just move the catch-22 from signup
+    # to Stripe onboarding.
+    US_OUTLYING_AREAS_AS_STATES = %w[PR].freeze
+
     def self.subdivisions_for_select(alpha2)
       case alpha2
       when Compliance::Countries::USA.alpha2
         Compliance::Countries::USA
           .subdivisions.values
-          .filter_map { |subdivision| [subdivision.code, subdivision.name] if ["state", "district"].include?(subdivision.type) }
+          .filter_map do |subdivision|
+            next unless ["state", "district"].include?(subdivision.type) ||
+                        US_OUTLYING_AREAS_AS_STATES.include?(subdivision.code)
+            [subdivision.code, subdivision.name]
+          end
           .sort_by { |pair| pair.last }
       when Compliance::Countries::CAN.alpha2
         Compliance::Countries::CAN.subdivisions.values.map { |subdivision| [subdivision.code, subdivision.name] }.sort_by { |pair| pair.last }
