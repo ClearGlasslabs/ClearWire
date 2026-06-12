@@ -600,10 +600,11 @@ describe SettingsPresenter do
       expect(presenter.payments_props).to eq(@base_props)
     end
 
-    it "excludes US outlying areas from the seller compliance country dropdown" do
+    it "excludes Puerto Rico but keeps the other US outlying areas in the seller compliance country dropdown" do
       countries = presenter.payments_props[:countries]
-      %w[AS GU MP PR UM VI].each do |territory|
-        expect(countries).not_to have_key(territory), "expected #{territory} to be excluded from countries but it was present"
+      expect(countries).not_to have_key("PR")
+      %w[AS GU MP UM VI].each do |territory|
+        expect(countries).to have_key(territory), "expected #{territory} to remain selectable but it was excluded"
       end
       expect(countries).to have_key("US")
     end
