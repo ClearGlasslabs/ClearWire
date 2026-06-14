@@ -15,24 +15,46 @@ module BasePrice::Shared
   end
 
   def save_recurring_prices!(recurrence_price_values)
-    enabled_recurrences = recurrence_price_values.select { |_, attributes| attributes[:enabled].to_s == "true" }
+    return if recurrence_price_values.blank?
+    
+    enabled_recurrences = recurrence_price_values.select { |_, attributes| attributes&.[](:enabled).to_s == "true" }
 
     enabled_recurrences.each do |recurrence, attributes|
+      next if attributes.blank?
+      
       price = attributes[:price]
-      # TODO: :product_edit_react cleanup
-      if price.blank? && attributes[:price_cents].blank?
+      price_cents = attributes[:price_cents]
+      
+      # Validate that at least one price format is provided
+      if price.blank? && price_cents.blank?
         errors.add(:base, "Please provide a price for all selected payment options.")
         raise Link::LinkInvalid
       end
-      # TODO: :product_edit_react cleanup
-      price_cents = attributes[:price_cents] || clean_price(price)
+      
+      # Use price_cents if available, otherwise clean the string price
+      calculated_price_cents = price_cents.present? ? price_cents : clean_price(price)
+      
+      # Validate price is not nil or blank after processing
+      if calculated_price_cents.blank?
+        errors.add(:base, "Invalid price format provided for #{recurrence} plan.")
+        raise Link::LinkInvalid
+      end
 
       suggested_price = attributes[:suggested_price]
-      # TODO: :product_edit_react cleanup
-      suggested_price_cents = attributes[:suggested_price_cents] || (suggested_price.present? ? clean_price(suggested_price) : nil)
+      suggested_price_cents = attributes[:suggested_price_cents]
+      
+      # Only process suggested price if provided
+      calculated_suggested_price_cents = if suggested_price_cents.present?
+                                           suggested_price_cents
+                                         elsif suggested_price.present?
+                                           clean_price(suggested_price)
+                                         else
+                                           nil
+                                         end
+
       create_or_update_new_price!(
-        price_cents:,
-        suggested_price_cents:,
+        price_cents: calculated_price_cents,
+        suggested_price_cents: calculated_suggested_price_cents,
         recurrence:,
         is_rental: false
       )
@@ -56,16 +78,19 @@ module BasePrice::Shared
       errors.add(:base, "'#{price_currency_type}' is not a supported currency.")
       return
     end
+    
     min_price = currency_config["min_price"]
+    return if min_price.blank?
 
     prices_to_validate.compact.each do |price_cents_to_validate|
-      next if price_cents_to_validate == 0
+      next if price_cents_to_validate.blank? || price_cents_to_validate == 0
 
       if price_cents_to_validate > MAX_PRICE_CENTS
         errors.add(:base, "Sorry, the price entered is too large.")
       elsif price_cents_to_validate < min_price
-        errors.add(:base, "Sorry, a product must be at least #{MoneyFormatter.format(min_price, price_currency_type.to_sym, no_cents_if_whole: true, symbol: true)}.")
-      elsif user.max_product_price && get_usd_cents(price_currency_type, price_cents_to_validate) > user.max_product_price
+        formatted_min = MoneyFormatter.format(min_price, price_currency_type.to_sym, no_cents_if_whole: true, symbol: true)
+        errors.add(:base, "Sorry, a product must be at least #{formatted_min}.")
+      elsif user&.max_product_price && get_usd_cents(price_currency_type, price_cents_to_validate) > user.max_product_price
         errors.add(:base, "Sorry, we don't support pricing products above $5,000.")
       end
     end
