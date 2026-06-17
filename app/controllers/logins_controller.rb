@@ -52,6 +52,10 @@ class LoginsController < Devise::SessionsController
 
     sign_in_or_prepare_for_two_factor_auth(@user)
 
+    if user_signed_in? && @user.passkeys_enabled?
+      Rails.logger.info("passkey.password_fallback user_id=#{@user.id}")
+    end
+
     if @user.respond_to?(:pwned?) && @user.pwned?
       flash[:warning] = "Your password has previously appeared in a data breach as per haveibeenpwned.com and should never be used. We strongly recommend you change your password everywhere you have used it."
     end
