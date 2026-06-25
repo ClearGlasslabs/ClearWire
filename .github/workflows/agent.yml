@@ -1,0 +1,65 @@
+name: Workflow Repair Agent (Hardened)
+
+# Manual dispatch only. workflow_dispatch can be triggered exclusively by users
+# with write access to the repository, so the agent is never reachable from
+# untrusted issue/PR comments or forked pull requests.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "dry-run reports proposed fixes only; fix opens a draft PR"
+        type: choice
+        default: dry-run
+        options:
+          - dry-run
+          - fix
+      scope:
+        description: "Which workflow(s) to repair (file name, job name, or 'all failing')"
+        type: string
+        default: "all failing"
+
+concurrency:
+  group: workflow-repair-agent
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run repair agent
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            Read PROMPT.md at the repository root and follow it exactly.
+
+            Run parameters for this invocation:
+            - mode: ${{ inputs.mode }}
+            - scope: ${{ inputs.scope }}
+            - repository: ${{ github.repository }}
+            - triggered by: ${{ github.actor }}
+
+            If mode is "dry-run", do not modify any files or open a PR. Produce a
+            written report of the failures you found and the fixes you propose.
+
+            If mode is "fix", make the minimal changes needed, push them to a new
+            branch named claude/workflow-repair-${{ github.run_id }}, and open a
+            draft pull request. Never push directly to the default branch.
+          claude_args: |
+            --max-turns 40
+            --allowedTools "Read,Grep,Glob,Edit,Write,Bash(git status:*),Bash(git diff:*),Bash(git checkout:*),Bash(git switch:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(gh run list:*),Bash(gh run view:*),Bash(gh pr create:*)"
