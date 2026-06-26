@@ -90,10 +90,13 @@ jobs:
         run: |
           echo '{"event":"license_review","status":"running"}' > audit/license_review.json
           find . -type f \( -name '*.js' -o -name '*.ts' -o -name '*.rb' -o -name '*.py' \) \
-            | grep -v node_modules \
-            | while read file; do
-                head -20 "$file" | grep -Ei 'MIT|Apache|GPL|AGPL|BSD|MPL' && echo "License reference found in $file";
+            -not -path './node_modules/*' -print0 \
+            | while IFS= read -r -d '' file; do
+                if head -20 "$file" | grep -Eiqw 'MIT|Apache|GPL|AGPL|BSD|MPL'; then
+                  echo "License reference found in $file"
+                fi
               done
+          echo 'License review complete'
 
       - name: Generate audit log
         run: |
