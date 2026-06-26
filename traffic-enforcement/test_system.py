@@ -151,6 +151,46 @@ def test_end_to_end_records_violation():
         assert os.path.exists(os.path.join(report_dir, v["clip"]))
 
 
+def _count_frames(path):
+    cap = cv2.VideoCapture(path)
+    n = 0
+    while True:
+        ok, _ = cap.read()
+        if not ok:
+            break
+        n += 1
+    cap.release()
+    return n
+
+
+def test_output_keeps_every_frame_after_violation():
+    # Regression: the annotated output must contain one frame per input frame.
+    # The earlier implementation read CLIP_PADDING_FRAMES ahead on the capture
+    # device when handling a violation, dropping those frames from the output
+    # and desynchronising the tracker.
+    with tempfile.TemporaryDirectory() as tmp:
+        video = os.path.join(tmp, "in.mp4")
+        out = os.path.join(tmp, "out.mp4")
+        n_in = 50
+        _synthetic_video(video, frames=n_in)
+
+        old_dir = config.VIOLATION_DIR
+        config.VIOLATION_DIR = os.path.join(tmp, "violations")
+        try:
+            system = EnforcementSystem(
+                detector=_StubDetector(),
+                plate_reader=_StubPlateReader(),
+                owner_registry=OwnerRegistry(
+                    os.path.join(os.path.dirname(__file__), "owners.json")),
+            )
+            violations = system.process_video(video, output_path=out)
+        finally:
+            config.VIOLATION_DIR = old_dir
+
+        assert len(violations) >= 1, "expected the stub to trigger a violation"
+        assert _count_frames(out) == n_in
+
+
 if __name__ == "__main__":
     import sys
     funcs = [g for n, g in sorted(globals().items()) if n.startswith("test_")]
