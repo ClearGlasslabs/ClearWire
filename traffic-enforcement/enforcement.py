@@ -76,23 +76,26 @@ class EnforcementSystem:
             ok, frame = cap.read()
             if not ok:
                 break
-            recorder.push_frame(frame)
+            raw = frame.copy()
 
-            detections = self.detector.detect(frame)
+            detections = self.detector.detect(raw)
             active = tracker.update(detections, frame_idx)
+
+            violators = [
+                t for t in active
+                if t.speed_kmh > config.SPEED_LIMIT_KMH
+                and not recorder.already_recorded(t.id)
+            ]
 
             for track in active:
                 _draw_track(frame, track)
-                is_violation = (
-                    track.speed_kmh > config.SPEED_LIMIT_KMH
-                    and not recorder.already_recorded(track.id)
-                )
-                if is_violation:
-                    report = self._handle_violation(
-                        recorder, tracker, cap, frame, track, frame_idx, fps)
-                    violations.append(report)
-
             _draw_legend(frame)
+
+            for track in violators:
+                violations.append(self._handle_violation(
+                    recorder, raw, track, frame_idx))
+
+            recorder.push_frame(frame)
             if writer is not None:
                 writer.write(frame)
             if show:
@@ -101,6 +104,7 @@ class EnforcementSystem:
                     break
             frame_idx += 1
 
+        recorder.close()
         cap.release()
         if writer is not None:
             writer.release()
@@ -108,23 +112,9 @@ class EnforcementSystem:
             cv2.destroyAllWindows()
         return violations
 
-    def _handle_violation(self, recorder, tracker, cap, frame, track, frame_idx, fps):
+    def _handle_violation(self, recorder, raw_frame, track, frame_idx):
         x1, y1, x2, y2 = (int(v) for v in track.bbox)
-        crop = frame[max(0, y1):y2, max(0, x1):x2]
+        crop = raw_frame[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
         plate = self.plate_reader.read_plate(crop)
         owner = self.owners.lookup(plate[0]) if plate else None
-
-        after = []
-        for _ in range(config.CLIP_PADDING_FRAMES):
-            ok, f = cap.read()
-            if not ok:
-                break
-            f2 = f.copy()
-            dets = self.detector.detect(f2)
-            for t in tracker.update(dets, frame_idx + len(after) + 1):
-                _draw_track(f2, t)
-            _draw_legend(f2)
-            recorder.push_frame(f)
-            after.append(f2)
-
-        return recorder.record(track, frame, frame_idx, plate, owner, after)
+        return recorder.record(track, raw_frame, frame_idx, plate, owner)
