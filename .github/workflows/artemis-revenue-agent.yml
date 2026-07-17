@@ -1,0 +1,48 @@
+name: ARTEMIS Revenue Agent
+
+on:
+  pull_request:
+    paths:
+      - "artemis-revenue-agent/**"
+      - ".github/workflows/artemis-revenue-agent.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "artemis-revenue-agent/**"
+      - ".github/workflows/artemis-revenue-agent.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: artemis-revenue-agent-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: artemis-revenue-agent
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: artemis-revenue-agent/pyproject.toml
+
+      - name: Install
+        run: python -m pip install --upgrade pip && pip install -e '.[test]'
+
+      - name: Test
+        run: pytest
+
+      - name: Import smoke test
+        run: python -c "from artemis_revenue_agent.api import app; assert app.title"
