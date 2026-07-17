@@ -1,0 +1,62 @@
+[
+  {
+    "service_id": "security-quick-audit",
+    "title": "Security Quick-Audit",
+    "price_cad": null,
+    "price_display": "REPLACE WITH APPROVED FIXED PRICE",
+    "positioning": "A read-only posture review that establishes an evidence-backed security baseline and prioritized remediation path.",
+    "benefits": [
+      "Read-only posture review",
+      "Prioritized findings and remediation plan",
+      "Written, decision-ready output"
+    ],
+    "allowed_concerns": ["security_visibility", "compliance_requirements", "other"],
+    "regulated_fit": false,
+    "requires_human_review": false
+  },
+  {
+    "service_id": "m365-windows-hardening-sprint",
+    "title": "Microsoft 365 + Windows Hardening Sprint",
+    "price_cad": null,
+    "price_display": "REPLACE WITH APPROVED FIXED PRICE",
+    "positioning": "A fixed-scope hardening engagement aligned to Microsoft 365, Entra ID, Windows controls, privilege reduction, and defensible configuration baselines.",
+    "benefits": [
+      "Microsoft 365 and Entra ID hardening priorities",
+      "Privilege and configuration-risk reduction",
+      "Documented implementation and remediation record"
+    ],
+    "allowed_concerns": ["microsoft_365_security", "recent_security_incident"],
+    "regulated_fit": false,
+    "requires_human_review": true
+  },
+  {
+    "service_id": "phipa-readiness-assessment",
+    "title": "PHIPA Readiness Assessment",
+    "price_cad": null,
+    "price_display": "REPLACE WITH APPROVED FIXED PRICE",
+    "positioning": "An Ontario-focused readiness assessment for organizations responsible for personal health information and regulated health-sector workflows.",
+    "benefits": [
+      "PHIPA-focused control and evidence review",
+      "Gap register with prioritized remediation actions",
+      "Audit-ready findings and implementation roadmap"
+    ],
+    "allowed_concerns": ["phipa_readiness", "compliance_requirements"],
+    "regulated_fit": true,
+    "requires_human_review": true
+  },
+  {
+    "service_id": "automation-as-a-service",
+    "title": "Automation-as-a-Service",
+    "price_cad": null,
+    "price_display": "REPLACE WITH APPROVED FIXED PRICE",
+    "positioning": "Human-governed automation for repeatable operational workflows, evidence capture, monitoring, and structured handoff.",
+    "benefits": [
+      "Human-in-the-loop workflow design",
+      "Structured automation and monitoring plan",
+      "Implementation roadmap with control boundaries"
+    ],
+    "allowed_concerns": ["process_automation"],
+    "regulated_fit": false,
+    "requires_human_review": true
+  }
+]
