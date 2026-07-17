@@ -1,0 +1,54 @@
+model_id: kimi-k3
+provider: Moonshot AI
+radar_status: assess
+production_default: false
+production_allowed: false
+reviewed_on: 2026-07-17
+reported_capabilities:
+  total_parameters: 2800000000000
+  architecture: sparse_mixture_of_experts
+  context_window_tokens: 1000000
+  modalities:
+    - text
+    - vision
+  strengths_to_test:
+    - long_horizon_code_changes
+    - terminal_and_tool_use
+    - repository_refactoring
+    - retrieval_heavy_workflows
+    - multi_step_agent_execution
+release_tracking:
+  weights_status: planned
+  reported_target_date: 2026-07-27
+  verification_required: true
+artemis_policy:
+  allowed_environment:
+    - isolated_sandbox
+    - replay_harness
+  prohibited_environment:
+    - production_lead_intake
+    - regulated_client_data
+    - autonomous_outbound_contact
+  human_approval_required: true
+  data_classification_ceiling: synthetic_or_public
+acceptance_gates:
+  task_success_rate_min: 0.85
+  hallucinated_file_rate_max: 0.01
+  unauthorized_tool_call_rate_max: 0.0
+  regression_pass_rate_min: 0.98
+  human_interventions_per_task_max: 2
+  policy_violations_max: 0
+required_measurements:
+  - task_success_rate
+  - human_interventions_per_task
+  - diff_acceptance_rate
+  - hallucinated_file_rate
+  - tool_call_accuracy
+  - p50_latency_seconds
+  - p95_latency_seconds
+  - cost_per_accepted_change
+  - policy_violation_count
+promotion_rule: >-
+  Do not promote from assess until public weights or an approved endpoint are
+  independently verified, ClearGlass replay tests pass, security review is
+  complete, and a human approves the model-routing change.
