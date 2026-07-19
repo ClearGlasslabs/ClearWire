@@ -1075,3 +1075,255 @@ On the next similar event, Artemis does not assert a single weak link. It presen
 - **Overfitting to operator preference**: feedback may encode local habits; mitigation is cross-mission evals, governance review, and holdout suites.
 - **Coalition release complexity**: releasability rules can be nuanced; mitigation is policy-as-code plus originator-control review queues.
 - **Automation bias**: operators may over-trust fluent AI; mitigation is uncertainty display, evidence-first UX, and mandatory dissenting-hypothesis generation for high-impact recommendations.
+
+## Production Implementation Blueprint
+
+### Service contracts
+
+ClearGlassInc Artemis treats every API request, event, AI tool call, eval run, and deployment proposal as a typed contract. Contracts are versioned because production intelligence systems fail when prompts, schemas, and workflows drift independently.
+
+```python
+from datetime import datetime, timezone
+from enum import StrEnum
+from pydantic import BaseModel, Field, field_validator
+
+class ClassificationLevel(StrEnum):
+    UNCLASSIFIED = "unclassified"
+    CONTROLLED = "controlled"
+    CONFIDENTIAL = "confidential"
+    SECRET = "secret"
+    TOP_SECRET = "top_secret"
+
+CLASSIFICATION_RANK = {
+    ClassificationLevel.UNCLASSIFIED: 1,
+    ClassificationLevel.CONTROLLED: 2,
+    ClassificationLevel.CONFIDENTIAL: 3,
+    ClassificationLevel.SECRET: 4,
+    ClassificationLevel.TOP_SECRET: 5,
+}
+
+class MissionContext(BaseModel):
+    mission_id: str = Field(min_length=4, max_length=64)
+    user_id: str = Field(min_length=4, max_length=128)
+    coalition: str = Field(min_length=2, max_length=32)
+    compartments: list[str] = Field(default_factory=list)
+    classification_ceiling: ClassificationLevel
+    authority_refs: list[str] = Field(default_factory=list)
+    issued_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("compartments")
+    @classmethod
+    def normalize_compartments(cls, value: list[str]) -> list[str]:
+        return sorted({item.strip().upper() for item in value if item.strip()})
+
+class EvidenceRef(BaseModel):
+    ref: str
+    source_hash: str
+    transform_version: str
+    classification: ClassificationLevel
+    compartments: list[str] = Field(default_factory=list)
+
+class RecommendationOutput(BaseModel):
+    recommendation_id: str
+    action_type: str
+    summary: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    uncertainty: str
+    evidence_refs: list[EvidenceRef]
+    approval_required: bool
+    approval_reason: str | None = None
+
+    @field_validator("evidence_refs")
+    @classmethod
+    def require_evidence(cls, value: list[EvidenceRef]) -> list[EvidenceRef]:
+        if not value:
+            raise ValueError("recommendations require lineage-backed evidence")
+        return value
+```
+
+### Backend package layout
+
+```text
+services/aip-agent-runtime/
+  artemis_agent_runtime/
+    api.py                    # FastAPI routes and dependency wiring
+    auth.py                   # workload identity and mission context validation
+    models.py                 # shared Pydantic contracts
+    ontology.py               # Foundry/Gotham ontology query facade
+    policy.py                 # policy decision client and obligations
+    router.py                 # model routing and latency budget logic
+    tools.py                  # AIP tool registry
+    workflows.py              # deterministic workflow state machines
+    evals.py                  # replay and score harness
+    audit.py                  # append-only audit writer
+    redaction.py              # prompt/log/eval field redaction
+```
+
+### Policy-aware model router
+
+The model router chooses a model only after policy filtering. It must never send prompts or retrieved context to a model that is not approved for the requested classification, coalition, and task.
+
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class ModelProfile:
+    model_id: str
+    approved_tasks: frozenset[str]
+    max_classification: ClassificationLevel
+    allowed_coalitions: frozenset[str]
+    p95_latency_ms: int
+    eval_score: float
+    supports_tools: bool
+
+class ModelRouter:
+    def __init__(self, profiles: list[ModelProfile]):
+        self.profiles = profiles
+
+    def select(self, *, task: str, ctx: MissionContext, latency_budget_ms: int, requires_tools: bool) -> ModelProfile:
+        candidates = [
+            profile
+            for profile in self.profiles
+            if task in profile.approved_tasks
+            and CLASSIFICATION_RANK[profile.max_classification] >= CLASSIFICATION_RANK[ctx.classification_ceiling]
+            and ctx.coalition in profile.allowed_coalitions
+            and profile.p95_latency_ms <= latency_budget_ms
+            and (profile.supports_tools or not requires_tools)
+        ]
+        if not candidates:
+            raise PermissionError("No approved model route for mission context")
+        return max(candidates, key=lambda profile: (profile.eval_score, -profile.p95_latency_ms))
+```
+
+### Deterministic approval gate
+
+Operationally significant actions are represented as draft packages until a human with the required authority approves them. The AI can prepare, explain, and validate a package; it cannot execute the package.
+
+```python
+class ActionPackage(BaseModel):
+    package_id: str
+    mission_id: str
+    action_type: str
+    operational_significance: str
+    created_by_agent: str
+    evidence_refs: list[EvidenceRef]
+    requested_effect: dict
+    status: str = "draft"
+
+class ApprovalDecision(BaseModel):
+    package_id: str
+    reviewer_id: str
+    decision: str
+    rationale: str
+    decided_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+async def submit_for_approval(package: ActionPackage, ctx: MissionContext) -> ActionPackage:
+    await authorize(ctx, "action_package:submit", package.mission_id)
+    obligations = await policy_obligations(ctx, package.action_type, package.model_dump())
+    if "human_approval_required" not in obligations:
+        raise PermissionError("Action packages must retain explicit human approval gates")
+    package.status = "pending_approval"
+    await audit_write(ctx, "action_package:submit", package.package_id, package.model_dump())
+    return package
+
+async def apply_approval(decision: ApprovalDecision, ctx: MissionContext) -> None:
+    await authorize(ctx, "action_package:approve", decision.package_id)
+    if decision.decision not in {"approved", "rejected", "needs_revision"}:
+        raise ValueError("unsupported approval decision")
+    await audit_write(ctx, "action_package:review", decision.package_id, decision.model_dump())
+    if decision.decision == "approved":
+        await publish("artemis.action_package.approved", decision.model_dump())
+```
+
+### Feedback-driven eval pipeline
+
+The self-improvement loop promotes only proposal artifacts, never raw operator behavior. Sensitive fields are redacted, examples are lineage-linked, and every candidate is tested against holdout suites before human review.
+
+```python
+class ImprovementSignal(BaseModel):
+    signal_id: str
+    source_type: str
+    mission_id: str
+    artifact_id: str
+    outcome: str
+    rationale_code: str
+    latency_ms: int | None = None
+    trust_score: int | None = Field(default=None, ge=1, le=5)
+    captured_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class CandidateArtifact(BaseModel):
+    artifact_id: str
+    artifact_type: str
+    parent_version: str
+    candidate_version: str
+    diff_summary: str
+    generated_by: str
+    rollback_target: str
+
+async def build_candidate_from_signals(task: str, signals: list[ImprovementSignal]) -> CandidateArtifact | None:
+    filtered = [signal for signal in signals if signal.rationale_code and signal.outcome in {"edited", "rejected"}]
+    if len(filtered) < 25:
+        return None
+    examples = [await signal_to_eval_example(signal) for signal in filtered]
+    redacted_examples = [await redact_eval_example(example) for example in examples]
+    candidate = await propose_prompt_update(task, redacted_examples)
+    eval_results = await run_eval_suite(candidate.candidate_version, await load_holdout_suite(task))
+    if not eval_gate_passed(eval_results):
+        await audit_system("candidate:block", candidate.artifact_id, {"reason": "eval_gate_failed"})
+        return None
+    await publish("artemis.improvement.candidate_ready", candidate.model_dump())
+    return candidate
+```
+
+### Observability metrics
+
+```yaml
+metrics:
+  operational:
+    - alert_time_to_triage_seconds
+    - recommendation_acceptance_rate
+    - action_package_revision_rate
+    - operator_trust_score_avg
+  model_quality:
+    - factuality_score
+    - citation_coverage_score
+    - entity_resolution_precision
+    - entity_resolution_recall
+    - hallucination_report_rate
+  security:
+    - policy_denial_count
+    - cross_boundary_query_block_count
+    - redaction_applied_count
+    - prompt_leakage_detector_count
+  deployment:
+    - apollo_canary_error_rate
+    - prompt_version_rollback_count
+    - workflow_shadow_delta
+    - p95_agent_latency_ms
+```
+
+### End-to-end Python control flow
+
+```python
+async def process_live_event(message: LiveEventMessage, ctx: MissionContext) -> RecommendationOutput | None:
+    await authorize(ctx, "event:ingest", message.event_id)
+    normalized = await normalize_event(message)
+    event = await upsert_ontology_event(normalized)
+    related = await ontology_client.query_events(ctx, {"event_id": event.event_id, "lookback_hours": 72})
+    triage = await run_triage_agent(ctx=ctx, event=event, related_events=related)
+    if triage.severity < 0.65:
+        await audit_write(ctx, "event:auto_close_low_severity", event.event_id, triage.model_dump())
+        return None
+    recommendation = await agent_runtime.run_recommendation_agent(ctx, triage.alert_id)
+    package = ActionPackage(
+        package_id=new_nanoid(),
+        mission_id=ctx.mission_id,
+        action_type=recommendation["action_type"],
+        operational_significance="requires_review",
+        created_by_agent="recommendation_agent.production",
+        evidence_refs=recommendation["evidence_refs"],
+        requested_effect=recommendation,
+    )
+    await submit_for_approval(package, ctx)
+    return RecommendationOutput(**recommendation)
+```
