@@ -1327,3 +1327,263 @@ async def process_live_event(message: LiveEventMessage, ctx: MissionContext) -> 
     await submit_for_approval(package, ctx)
     return RecommendationOutput(**recommendation)
 ```
+
+---
+
+## Production Implementation Package
+
+This package layout turns the architecture into deployable services while preserving the requirement that ClearGlassInc Artemis can propose self-upgrades only inside approved guardrails.
+
+```text
+artemis-platform/
+  pyproject.toml
+  artemis/
+    api/
+      gateway.py
+      dependencies.py
+      schemas.py
+    agents/
+      runtime.py
+      tools.py
+      workflow.py
+      model_router.py
+    ontology/
+      client.py
+      schemas.py
+      queries.py
+      lineage.py
+    improvement/
+      signals.py
+      evals.py
+      proposals.py
+      rollout.py
+      drift.py
+    policy/
+      engine.py
+      obligations.py
+      bundles/
+        need_to_know.rego
+        coalition_release.rego
+    observability/
+      audit.py
+      metrics.py
+      tracing.py
+    deploy/
+      apollo_release.py
+  web/
+    src/
+      app/
+      components/
+      api/
+      policy/
+      telemetry/
+  foundry/
+    transforms/
+    ontology/
+    functions/
+  tests/
+    unit/
+    integration/
+    evals/
+```
+
+### Python service boundaries
+
+```python
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Protocol
+
+class Decision(StrEnum):
+    ALLOW = "allow"
+    DENY = "deny"
+    REVIEW = "review"
+
+@dataclass(frozen=True)
+class ActorContext:
+    actor_id: str
+    mission_id: str
+    coalition: str
+    compartments: frozenset[str]
+    max_classification: str
+    purpose: str
+
+@dataclass(frozen=True)
+class PolicyDecision:
+    decision: Decision
+    obligations: tuple[str, ...]
+    reason: str
+
+class OntologyClient(Protocol):
+    async def get_event(self, ctx: ActorContext, event_id: str) -> dict: ...
+    async def search_related(self, ctx: ActorContext, query: dict) -> list[dict]: ...
+
+class PolicyEngine(Protocol):
+    async def authorize(self, ctx: ActorContext, action: str, resource: dict) -> PolicyDecision: ...
+```
+
+The `ActorContext` is passed through every backend, ontology, retrieval, and AIP tool call. A missing context is a programming error, not an anonymous fallback path.
+
+### Policy-first API gateway
+
+```python
+from fastapi import Depends, FastAPI, HTTPException, Request
+from pydantic import BaseModel, Field
+
+app = FastAPI(title="ClearGlassInc Artemis Gateway")
+
+class TriageRequest(BaseModel):
+    event_id: str = Field(min_length=8)
+    mission_id: str = Field(min_length=4)
+
+class TriageResponse(BaseModel):
+    alert_id: str
+    severity: float
+    recommendation_id: str | None
+    approval_required: bool
+
+async def actor_context(request: Request) -> ActorContext:
+    claims = request.state.verified_claims
+    return ActorContext(
+        actor_id=claims["sub"],
+        mission_id=claims["mission"],
+        coalition=claims["coalition"],
+        compartments=frozenset(claims.get("compartments", [])),
+        max_classification=claims["max_classification"],
+        purpose="mission_triage",
+    )
+
+@app.post("/v1/triage", response_model=TriageResponse)
+async def triage_event(payload: TriageRequest, ctx: ActorContext = Depends(actor_context)) -> TriageResponse:
+    if payload.mission_id != ctx.mission_id:
+        raise HTTPException(status_code=403, detail="mission scope mismatch")
+    result = await triage_workflow.run(ctx, payload.event_id)
+    return TriageResponse(**result)
+```
+
+### Deterministic workflow state machine
+
+```python
+from enum import StrEnum
+from pydantic import BaseModel
+
+class WorkflowState(StrEnum):
+    RECEIVED = "received"
+    NORMALIZED = "normalized"
+    ENRICHED = "enriched"
+    TRIAGED = "triaged"
+    PENDING_APPROVAL = "pending_approval"
+    CLOSED = "closed"
+    FAILED_SAFE = "failed_safe"
+
+class WorkflowTransition(BaseModel):
+    from_state: WorkflowState
+    to_state: WorkflowState
+    actor: str
+    reason: str
+
+ALLOWED_TRANSITIONS = {
+    WorkflowState.RECEIVED: {WorkflowState.NORMALIZED, WorkflowState.FAILED_SAFE},
+    WorkflowState.NORMALIZED: {WorkflowState.ENRICHED, WorkflowState.FAILED_SAFE},
+    WorkflowState.ENRICHED: {WorkflowState.TRIAGED, WorkflowState.FAILED_SAFE},
+    WorkflowState.TRIAGED: {WorkflowState.PENDING_APPROVAL, WorkflowState.CLOSED, WorkflowState.FAILED_SAFE},
+    WorkflowState.PENDING_APPROVAL: {WorkflowState.CLOSED, WorkflowState.FAILED_SAFE},
+}
+
+def validate_transition(transition: WorkflowTransition) -> None:
+    if transition.to_state not in ALLOWED_TRANSITIONS.get(transition.from_state, set()):
+        raise ValueError(f"invalid transition: {transition.from_state} -> {transition.to_state}")
+```
+
+### Self-improvement approval contract
+
+```python
+from datetime import UTC, datetime
+from pydantic import BaseModel, Field
+
+class EvalSummary(BaseModel):
+    suite_id: str
+    precision: float
+    recall: float
+    leakage_findings: int
+    p95_latency_ms: int
+    regression_failures: int
+
+class ImprovementProposal(BaseModel):
+    proposal_id: str
+    artifact_type: str
+    parent_version: str
+    candidate_version: str
+    generated_from_signal_ids: list[str]
+    eval_summary: EvalSummary
+    rollback_target: str
+    requires_approvers: list[str]
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    def deployable(self) -> bool:
+        return (
+            self.eval_summary.precision >= 0.92
+            and self.eval_summary.recall >= 0.88
+            and self.eval_summary.leakage_findings == 0
+            and self.eval_summary.regression_failures == 0
+            and self.eval_summary.p95_latency_ms <= 2500
+            and self.rollback_target == self.parent_version
+        )
+```
+
+### Rollback-safe Apollo release gate
+
+```python
+async def prepare_apollo_release(proposal: ImprovementProposal) -> dict:
+    if not proposal.deployable():
+        raise ValueError("proposal does not satisfy release gates")
+    approvals = await approval_store.list_approvals(proposal.proposal_id)
+    missing = set(proposal.requires_approvers) - {approval.role for approval in approvals if approval.approved}
+    if missing:
+        raise PermissionError(f"missing approvals: {sorted(missing)}")
+    return {
+        "package": f"artemis-{proposal.artifact_type}-{proposal.candidate_version}",
+        "ring": "canary",
+        "rollback_target": proposal.rollback_target,
+        "health_gates": [
+            "policy_denials_not_decreased",
+            "leakage_findings_zero",
+            "p95_latency_within_budget",
+            "operator_rejection_rate_not_worse",
+        ],
+    }
+```
+
+### Regression test examples
+
+```python
+import pytest
+
+@pytest.mark.asyncio
+async def test_cross_coalition_retrieval_is_denied(policy_engine, analyst_ctx, foreign_event):
+    decision = await policy_engine.authorize(analyst_ctx, "ontology:event:read", foreign_event)
+    assert decision.decision == Decision.DENY
+
+@pytest.mark.asyncio
+async def test_self_improvement_requires_zero_leakage_findings():
+    proposal = ImprovementProposal(
+        proposal_id="prop_001",
+        artifact_type="prompt",
+        parent_version="alert_triage.v17",
+        candidate_version="alert_triage.v18",
+        generated_from_signal_ids=["sig_1"],
+        rollback_target="alert_triage.v17",
+        requires_approvers=["mission_owner", "model_governance"],
+        eval_summary=EvalSummary(
+            suite_id="alert_triage_regression_2026_07",
+            precision=0.96,
+            recall=0.91,
+            leakage_findings=1,
+            p95_latency_ms=1800,
+            regression_failures=0,
+        ),
+    )
+    assert proposal.deployable() is False
+```
+
+These tests encode the safety invariants directly: policy boundaries cannot be relaxed by retrieval, and self-improvement cannot ship when evaluation detects leakage.
