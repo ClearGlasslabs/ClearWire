@@ -2,6 +2,12 @@
 
 ClearGlassInc Artemis is a secure, coalition-aware, multi-domain intelligence platform built around Palantir Gotham, Foundry, AIP, and Apollo. It fuses live and historical data, reasons over mission context, supports audited human decisions at machine speed, and safely improves its prompts, workflows, model routing, and evaluation logic through explicit approval gates.
 
+## Main objective
+
+**Treat the repo like a defense-grade system that must scale under pressure and evolve continuously.**
+
+This blueprint turns ClearGlassInc Artemis from a working project into a serious technical platform with clean architecture, advanced automation, AI capabilities, strong security, observability, scalability, maintainability, and production-grade handoff paths for founder Desmond Otieno Odhiambo and ClearGlassInc Artemis operators.
+
 Palantir terminology used in this design:
 
 - **Gotham**: operational intelligence environment for investigations, entity tracking, link analysis, and mission workflows.
@@ -10,6 +16,82 @@ Palantir terminology used in this design:
 - **Apollo**: secure deployment, release orchestration, runtime control, staged rollout, rollback, and environment policy enforcement.
 
 The design assumes a high-assurance deployment where AI may recommend and prepare work products, but operationally significant actions require human approval and policy validation.
+
+---
+
+## Repository Assessment
+
+### What the repo does well
+
+- Establishes ClearGlassInc Artemis as an ontology-first intelligence platform instead of a collection of disconnected demos.
+- Uses the correct Palantir platform boundaries: Gotham for operations and investigations, Foundry for governed data and ontology, AIP for agents and evaluations, and Apollo for controlled deployment.
+- Keeps self-improvement constrained to proposed artifacts, evals, approval gates, and rollbackable releases rather than unsafe autonomous goal changes.
+- Models policy, lineage, confidence, and temporal state as first-class design primitives that both people and agents must respect.
+
+### What is missing
+
+- A concrete implementation backlog that ranks which services, schemas, policies, tests, and dashboards should be built first.
+- A repository-level refactor plan that separates production runtime code, platform documentation, eval assets, policy bundles, and deployment definitions.
+- More explicit acceptance criteria for when prompts, workflows, retrieval policies, and model routes are allowed to advance through Apollo rings.
+- A checklist for removing placeholder code, weak abstractions, duplicated workflow logic, and non-audited AI paths.
+
+### What blocks a top-tier platform
+
+- Any AI workflow that can query data without mission context, policy filtering, lineage references, and immutable audit logging.
+- Any self-improvement loop that updates prompts, heuristics, routing, or workflows without eval evidence, human approval, versioning, and rollback.
+- Any frontend or API path that hides classification markings, uncertainty, approval state, or provenance from operators.
+- Any deployment mechanism that cannot canary, observe, freeze, or roll back code, prompt, workflow, policy, and model-route artifacts together.
+
+## Best Upgrade Opportunities
+
+1. **Policy-first ontology query facade**: centralize every Gotham, Foundry, search, retrieval, and AIP tool query behind one mission-context-aware authorization boundary.
+2. **Self-improvement control plane**: convert operator edits, feedback, outcomes, and telemetry into eval examples, candidate proposals, approval packets, and Apollo releases.
+3. **AIP agent runtime with deterministic workflow states**: make triage, enrichment, correlation, summarization, recommendation, and approval steps replayable and testable.
+4. **Observability and eval dashboards**: expose latency, precision, recall, trust, policy denials, hallucination reports, citation coverage, drift, and deployment health.
+5. **Prompt, workflow, and model-route registries**: version all intelligence behavior as governed artifacts with owners, model cards, prompt cards, eval suites, and rollback targets.
+6. **Repository modularization**: split frontend, gateway, agent runtime, ontology, policy, evals, and Apollo deployment definitions into independently testable packages.
+7. **Security hardening**: enforce zero-trust service identity, signed context envelopes, short-lived tool grants, redaction, immutable logs, and coalition boundary tests.
+
+## Refactor Plan
+
+| Area          | Remove or simplify                                     | Build next                                                  | Verification                                        |
+| ------------- | ------------------------------------------------------ | ----------------------------------------------------------- | --------------------------------------------------- |
+| AI workflows  | Ad hoc prompt calls and unversioned agent logic        | Versioned AIP workflow graphs and prompt cards              | Replay tests, eval suites, audit trace checks       |
+| Data access   | Direct dataset queries from agents or UI services      | `ontology-query` facade with ABAC filters                   | Cross-coalition denial tests and lineage assertions |
+| Feedback      | Free-text feedback without structure                   | Typed feedback capture and eval conversion                  | Golden eval generation tests                        |
+| Deployment    | Manual promotion of behavior changes                   | Apollo ring specs for code, prompts, policies, and routes   | Canary health gates and rollback drills             |
+| UI            | Recommendation cards without provenance or uncertainty | Evidence-first approval UX with classification markings     | Component tests and operator QA scripts             |
+| Observability | Logs that cannot reconstruct decisions                 | Metrics, traces, eval dashboards, hash-chained audit ledger | Trace completeness and audit integrity tests        |
+| Policy        | Scattered permission checks                            | Policy-as-code bundles plus obligations                     | Rego unit tests and API integration tests           |
+
+## Implementation Plan
+
+### 1. Policy-first ontology facade
+
+- **Purpose**: make all human and AI data access need-to-know, lineage-backed, and auditable.
+- **Architecture**: API gateway injects `MissionContext`; ontology service applies ABAC, row, column, entity, and action filters before querying Foundry or Gotham.
+- **Dependencies**: OIDC claims, policy bundles, Foundry ontology mappings, audit ledger.
+- **Risks**: over-filtering can hide valid evidence; under-filtering can leak compartments.
+- **Testing approach**: cross-coalition denial tests, classification ceiling tests, redaction tests, lineage coverage tests.
+- **Rollout sequence**: lab facade, shadow existing queries, migrate AIP tools, migrate UI reads, block direct reads.
+
+### 2. Self-improvement control plane
+
+- **Purpose**: let Artemis get better from operator feedback while preventing uncontrolled behavior changes.
+- **Architecture**: feedback service emits signals, eval builder creates redacted examples, proposal service generates candidate artifacts, review board approves, Apollo deploys.
+- **Dependencies**: prompt registry, workflow registry, eval harness, approval store, Apollo package definitions.
+- **Risks**: overfitting to local operator habits, leaking sensitive data into eval stores, optimizing latency at the cost of trust.
+- **Testing approach**: holdout evals, leakage scanners, A/B shadow tests, rollback drills.
+- **Rollout sequence**: capture-only, offline eval generation, shadow candidates, human-reviewed canary, production promotion.
+
+### 3. Agent runtime and approval gates
+
+- **Purpose**: make agentic triage, enrichment, correlation, recommendation, and action packages deterministic enough for mission use.
+- **Architecture**: AIP agent runtime uses scoped tools, model router, workflow state machine, policy obligations, and immutable audit records.
+- **Dependencies**: tool registry, model profiles, approval service, audit ledger, evaluation dashboards.
+- **Risks**: automation bias, tool misuse, stale context, latency spikes during critical events.
+- **Testing approach**: workflow transition tests, policy obligation tests, tool scope tests, p95 latency benchmarks.
+- **Rollout sequence**: read-only copilot, draft recommendations, approval queues, limited canary, mission expansion.
 
 ---
 
