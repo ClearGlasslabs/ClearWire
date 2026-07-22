@@ -71,3 +71,81 @@ def test_agent_never_invents_price():
     )
     assert result.recommended_offering.price_cad is None
     assert "approved" in result.recommended_offering.price_display.lower()
+
+
+from datetime import UTC, datetime
+
+from artemis_revenue_agent.incident import (
+    Evidence,
+    PolicyContext,
+    SignalInput,
+    SignalSeverity,
+    evaluate_signal,
+)
+
+
+def test_incident_evaluation_denies_high_impact_without_approval():
+    signal = SignalInput(
+        tenant_id="tenant-alpha",
+        signal_id="sig-001",
+        source="edr",
+        summary="Credential theft and unauthorized access suspected on checkout admin host",
+        severity=SignalSeverity.CRITICAL,
+        asset_ids=["checkout-admin-1"],
+        dependency_ids=["payments-api"],
+        evidence=[
+            Evidence(
+                source="edr",
+                reference="evt-1",
+                observed_at=datetime.now(UTC),
+                summary="Credential alert",
+                confidence=0.91,
+            )
+        ],
+    )
+    decision = evaluate_signal(
+        signal, PolicyContext(actor_id="analyst-1", tenant_id="tenant-alpha", roles=[])
+    )
+    assert decision.classification == "security_incident"
+    assert decision.recommended_actions[0].requires_human_approval is True
+    assert (
+        "Human approval token is required before execution" in decision.policy_denials
+    )
+    assert decision.current_stage == "escalate"
+    assert len(decision.audit_receipt) == 64
+
+
+def test_incident_evaluation_executes_bounded_path_with_approval():
+    signal = SignalInput(
+        tenant_id="tenant-alpha",
+        signal_id="sig-002",
+        source="synthetic-monitor",
+        summary="Checkout latency timeout rate breached revenue SLO",
+        severity=SignalSeverity.HIGH,
+        asset_ids=["checkout-web"],
+        dependency_ids=["payments-api", "postgres-primary"],
+        evidence=[
+            Evidence(
+                source="apm",
+                reference="trace-1",
+                observed_at=datetime.now(UTC),
+                summary="Timeout spike",
+                confidence=0.88,
+            )
+        ],
+    )
+    policy = PolicyContext(
+        actor_id="incident-commander",
+        tenant_id="tenant-alpha",
+        roles=["incident_operator"],
+        high_impact_approval=True,
+        max_blast_radius=5,
+    )
+    decision = evaluate_signal(signal, policy)
+    assert decision.classification == "revenue_risk"
+    assert decision.policy_denials == []
+    assert decision.current_stage == "close"
+    assert decision.recommended_actions[0].max_retries == 2
+    assert decision.dependency_graph == {
+        "checkout-web": ["payments-api", "postgres-primary"]
+    }
