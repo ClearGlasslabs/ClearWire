@@ -18,6 +18,7 @@ export const Card = React.forwardRef<HTMLDivElement, CardProps>(
         ref={ref}
         className={classNames(
           "grid divide-y divide-solid divide-border rounded border border-border bg-background",
+          !borderless && "neon-card",
           borderless && "gap-4 border-none [&>*]:border-none [&>*]:p-0",
           className,
         )}

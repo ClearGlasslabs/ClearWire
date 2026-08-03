@@ -46,7 +46,7 @@ export const Nav = ({
   const isDesktop = useIsAboveBreakpoint("lg");
 
   return (
-    <div role="nav">
+    <div role="nav" className="neon-navigation">
       <NestedMenu
         type={isDesktop ? "menubar" : "menu"}
         moreLabel="More Categories"
