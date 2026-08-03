@@ -1,21 +1,86 @@
 name: Stripe integration security
+
 on:
   pull_request:
   push:
     branches: [main, master]
   workflow_dispatch:
+
 permissions:
   contents: read
+
+concurrency:
+  group: stripe-security-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   prevent-stripe-secret-leaks:
+    name: Prevent Stripe secret leaks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - name: Reject committed Stripe credentials
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Reject newly committed Stripe credentials
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          zero_sha="0000000000000000000000000000000000000000"
+          base_sha="${BASE_SHA:-}"
+          head_sha="${HEAD_SHA:-HEAD}"
+
+          if [[ -z "$base_sha" || "$base_sha" == "$zero_sha" ]] || \
+             ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+            base_sha="$(git rev-parse "${head_sha}^" 2>/dev/null || true)"
+          fi
+
+          if [[ -z "$base_sha" ]]; then
+            echo "No parent commit is available; nothing new to scan."
+            exit 0
+          fi
+
+          secret_pattern='(sk|rk)_(live|test)_[A-Za-z0-9]{16,}|whsec_[A-Za-z0-9]{16,}'
+          found=0
+
+          while IFS= read -r -d '' file; do
+            [[ -f "$file" ]] || continue
+
+            if git diff --no-ext-diff --unified=0 "$base_sha" "$head_sha" -- "$file" \
+              | sed -n '/^+++ /d; s/^+//p' \
+              | grep -Eq "$secret_pattern"; then
+              echo "::error file=${file}::Potential Stripe credential introduced. Remove it and rotate the credential if it was real."
+              found=1
+            fi
+          done < <(
+            git diff --name-only --diff-filter=ACMR -z "$base_sha" "$head_sha" -- \
+              ':!*.lock' \
+              ':!.github/workflows/stripe-security.yml'
+          )
+
+          if [[ "$found" -ne 0 ]]; then
+            exit 1
+          fi
+
+          echo "No newly committed Stripe credentials detected."
+
+      - name: Verify Stripe integration contract
         shell: bash
         run: |
           set -euo pipefail
-          if git grep -nE '(sk|rk)_(live|test)_[A-Za-z0-9]{16,}|whsec_[A-Za-z0-9]{16,}' -- ':!*.lock' ':!stripe-security.yml'; then exit 1; fi
-      - name: ClearGlass Stripe contract
-        run: |
-          echo 'Account acct_1TG2qt65MGeeiD4K; use encrypted STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_ALLOWED_PRICE_IDS, STRIPE_SUCCESS_URL, STRIPE_CANCEL_URL. Require hosted Checkout, server-side prices, verified raw-body webhooks, and idempotency.'
+          required=(
+            STRIPE_SECRET_KEY
+            STRIPE_WEBHOOK_SECRET
+            STRIPE_ALLOWED_PRICE_IDS
+            STRIPE_SUCCESS_URL
+            STRIPE_CANCEL_URL
+          )
+          printf 'Required encrypted configuration: %s\n' "${required[*]}"
+          echo 'Controls: hosted Checkout, server-side price validation, raw-body webhook verification, and idempotent event handling.'
