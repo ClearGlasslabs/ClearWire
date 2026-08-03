@@ -124,6 +124,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 
     const classes = classNames(
       buttonVariants({ variant, size, color: color || undefined }),
+      color && color !== "default" && "neon-cta",
       disabled && "cursor-not-allowed opacity-30 hover:translate-0 hover:shadow-none",
       className,
     );

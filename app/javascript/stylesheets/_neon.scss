@@ -1,0 +1,158 @@
+@keyframes neon-halo-pulse {
+  0%,
+  100% {
+    opacity: 0.38;
+    filter: blur(12px);
+  }
+
+  50% {
+    opacity: 0.72;
+    filter: blur(17px);
+  }
+}
+
+@keyframes neon-edge-shimmer {
+  0% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
+
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+@keyframes neon-cta-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0.35rem rgb(var(--neon-cyan) / 0.28),
+      0 0 1.1rem rgb(var(--neon-violet) / 0.18);
+  }
+
+  50% {
+    box-shadow:
+      0 0 0.6rem rgb(var(--neon-cyan) / 0.48),
+      0 0 1.8rem rgb(var(--neon-magenta) / 0.26);
+  }
+}
+
+@layer components {
+  :root,
+  :host {
+    --neon-cyan: 69 244 255;
+    --neon-blue: 78 128 255;
+    --neon-violet: 157 92 255;
+    --neon-magenta: 255 69 205;
+    --neon-white: 235 250 255;
+  }
+
+  :where(.neon-surface, .neon-card, .neon-navigation, .neon-hero) {
+    position: relative;
+    isolation: isolate;
+  }
+
+  :where(.neon-surface, .neon-card, .neon-navigation, .neon-hero)::before {
+    position: absolute;
+    z-index: -1;
+    inset: -1px;
+    border-radius: inherit;
+    background: linear-gradient(
+      115deg,
+      rgb(var(--neon-cyan) / 0.62),
+      rgb(var(--neon-violet) / 0.36) 36%,
+      rgb(var(--neon-magenta) / 0.48) 68%,
+      rgb(var(--neon-white) / 0.5)
+    );
+    background-size: 220% 220%;
+    content: "";
+    opacity: 0.42;
+    filter: blur(12px);
+    pointer-events: none;
+    animation:
+      neon-halo-pulse 5.8s ease-in-out infinite,
+      neon-edge-shimmer 11s ease-in-out infinite;
+  }
+
+  .neon-card {
+    box-shadow:
+      inset 0 0 0 1px rgb(var(--neon-white) / 0.08),
+      0 0 0.75rem rgb(var(--neon-blue) / 0.09);
+  }
+
+  .neon-card:nth-child(3n + 2)::before {
+    animation-delay:
+      -1.9s,
+      -3.4s;
+  }
+
+  .neon-card:nth-child(3n)::before {
+    animation-delay:
+      -3.8s,
+      -6.8s;
+  }
+
+  .neon-hero {
+    box-shadow:
+      inset 0 -1px 0 rgb(var(--neon-cyan) / 0.5),
+      0 0.75rem 2.5rem rgb(var(--neon-violet) / 0.14);
+  }
+
+  .neon-hero::before {
+    inset: auto 4% -2px;
+    height: 3px;
+    border-radius: 100%;
+    filter: blur(7px);
+  }
+
+  .neon-navigation {
+    border-radius: var(--border-radius-2);
+    box-shadow: inset 0 0 0 1px rgb(var(--neon-white) / 0.08);
+  }
+
+  .neon-navigation::before {
+    opacity: 0.3;
+  }
+
+  .neon-cta:not(:disabled, [inert]) {
+    outline: 1px solid rgb(var(--neon-white) / 0.14);
+    outline-offset: -2px;
+    animation: neon-cta-pulse 4.6s ease-in-out infinite;
+  }
+
+  .neon-cta:not(:disabled, [inert]):is(:hover, :focus-visible) {
+    box-shadow:
+      0 0 0.75rem rgb(var(--neon-cyan) / 0.62),
+      0 0 2.2rem rgb(var(--neon-magenta) / 0.34);
+  }
+
+  .neon-divider {
+    border-color: rgb(var(--neon-cyan) / 0.48);
+    box-shadow:
+      0 1px 0 rgb(var(--neon-white) / 0.12),
+      0 0.35rem 1.2rem rgb(var(--neon-violet) / 0.2);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :where(.neon-surface, .neon-card, .neon-navigation, .neon-hero)::before {
+      opacity: 0.62;
+    }
+
+    .neon-card {
+      background-image: linear-gradient(145deg, rgb(var(--neon-blue) / 0.045), transparent 42%);
+      box-shadow:
+        inset 0 0 0 1px rgb(var(--neon-white) / 0.1),
+        0 0 1.1rem rgb(var(--neon-blue) / 0.14);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :where(.neon-surface, .neon-card, .neon-navigation, .neon-hero)::before,
+    .neon-cta:not(:disabled, [inert]) {
+      animation: none;
+    }
+  }
+}
