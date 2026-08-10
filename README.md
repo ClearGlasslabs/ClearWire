@@ -1,3 +1,11 @@
+<!-- CLEARGLASS-BRAND:START -->
+<p align="center">
+  <a href="https://www.clearglassinc.com/">
+    <img src="https://raw.githubusercontent.com/ClearGlasslabs/ClearGlassInc./brand-assets/clearglass-seal.jpg" alt="ClearGlass Inc." width="360" />
+  </a>
+</p>
+<!-- CLEARGLASS-BRAND:END -->
+
 <p align="center">
   <picture>
     <source srcset="https://public-files.gumroad.com/logo/gumroad-dark.svg" media="(prefers-color-scheme: dark)">
@@ -97,7 +105,7 @@ brew services stop mysql@8.0
 
 ##### ImageMagick
 
-We use `imagemagick` for preview editing.
+We use `imagemagick` for preview editing with ActiveStorage.
 
 - For MacOS: `brew install imagemagick`
 - For Linux: `sudo apt-get install imagemagick`
@@ -134,7 +142,7 @@ While generating invoices, to convert HTML to PDF, PDFKit expects [wkhtmltopdf](
 
 #### Bundler and gems
 
-We use Bundler to install Ruby gems.
+We use Bundler to install Ruby gems:
 
 ```shell
 gem install bundler
