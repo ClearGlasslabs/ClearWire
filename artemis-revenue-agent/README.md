@@ -68,6 +68,7 @@ curl http://127.0.0.1:8080/healthz
 ```bash
 curl -X POST http://127.0.0.1:8080/v1/qualify \
   -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: sample-qualification-001' \
   -d '{
     "organization_name": "Ontario Sample Manufacturing",
     "contact_name": "Jordan Lee",
@@ -135,13 +136,13 @@ Rules:
 
 ## Lead scoring
 
-| Dimension | Maximum |
-|---|---:|
-| Budget fit | 25 |
-| Decision authority | 25 |
-| Timeline | 25 |
-| Risk and service fit | 25 |
-| **Total** | **100** |
+| Dimension            | Maximum |
+| -------------------- | ------: |
+| Budget fit           |      25 |
+| Decision authority   |      25 |
+| Timeline             |      25 |
+| Risk and service fit |      25 |
+| **Total**            | **100** |
 
 Bands:
 
@@ -166,13 +167,20 @@ ARTEMIS is not an incident-response service. Active incidents must be routed to 
 
 ## Environment variables
 
-| Variable | Purpose | Default |
-|---|---|---|
-| `ARTEMIS_HOST` | Listener host | `127.0.0.1` |
-| `ARTEMIS_PORT` | Listener port | `8080` |
-| `ARTEMIS_SERVICE_CATALOG` | Approved four-service catalog | Built-in no-price fallback |
-| `ARTEMIS_HANDOFF_WEBHOOK_URL` | NEXUS/CRM handoff endpoint | Disabled |
-| `ARTEMIS_HANDOFF_SECRET` | HMAC signing secret | Unsigned |
+| Variable                                   | Purpose                                                 | Default                    |
+| ------------------------------------------ | ------------------------------------------------------- | -------------------------- |
+| `ARTEMIS_HOST`                             | Listener host                                           | `127.0.0.1`                |
+| `ARTEMIS_PORT`                             | Listener port                                           | `8080`                     |
+| `ARTEMIS_SERVICE_CATALOG`                  | Approved four-service catalog                           | Built-in no-price fallback |
+| `ARTEMIS_HANDOFF_WEBHOOK_URL`              | NEXUS/CRM handoff endpoint                              | Disabled                   |
+| `ARTEMIS_HANDOFF_SECRET`                   | HMAC signing secret                                     | Unsigned                   |
+| `ARTEMIS_EXTERNAL_WEBHOOKS_ENABLED`        | Requests external handoff activation; exact `true` only | Disabled                   |
+| `ARTEMIS_EXTERNAL_WEBHOOKS_OWNER_APPROVED` | Records explicit owner approval; exact `true` only      | Disabled                   |
+| `ARTEMIS_OPERATOR_MONITORING_KEY`          | Authorizes the job inventory route                      | Disabled                   |
+
+Both external-webhook variables are required before delivery can occur. AI, email, billing, live-data, blue-team, and external-webhook capabilities otherwise fail closed.
+
+Operational readiness is available at `/readyz`. The non-secret job inventory is available at `/v1/operations/jobs` only when `ARTEMIS_OPERATOR_MONITORING_KEY` is configured and supplied as `X-Operator-Key`; the response also denies public indexing. Replace this bootstrap control with deployment-edge identity and policy enforcement before production use. See `ADVANCED_OPERATIONS_COVERAGE_MAP.md` for evidence, status, validation, and rollback details.
 
 ## Deployment boundary
 
