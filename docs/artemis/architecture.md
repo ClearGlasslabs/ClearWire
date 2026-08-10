@@ -116,6 +116,8 @@ Interactions/outcomes -> privacy filtering -> labeled feedback dataset -> failur
 
 A/B tests apply only to presentation and low-risk analytical assistance. Operationally significant recommendations use shadow evaluation, not experiments that expose operators to unvalidated behavior. Optimization is constrained multi-objective: improve attributable precision/recall and operator value subject to hard policy/safety limits and bounded latency/cost.
 
+The executable reference in `lib/artemis/evolution.py` binds every feedback label to the exact prompt, workflow, route, ontology, policy, and dataset versions. Its release controller rejects protected configuration changes, requires distinct product and security approvers, enforces ordered shadow/canary promotion, blocks candidates with policy violations or cross-compartment leakage, and preserves rollback as a transition from every release stage. Deterministic hashing gives reproducible canary cohorts and evaluation dataset manifests without allowing the candidate to assign or promote itself.
+
 ## Full-stack implementation
 
 ### Service contracts
