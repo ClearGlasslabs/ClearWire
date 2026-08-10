@@ -1,10 +1,10 @@
-<div class="bg-gray min-h-screen">
-  <header class="grid grid-cols-1 bg-gray">
-    <div data-hero-parallax-container class="relative flex items-center justify-center px-8 py-40 lg:px-[8vw] md:py-56">
-      <div class="flex flex-col max-w-3xl items-center gap-6 text-center z-10">
-        <h1 class="leading-none text-6xl md:text-7xl lg:text-8xl">Go from<br class="sm:hidden"> <span class="whitespace-nowrap">0 to $1</span></h1>
-        <div class="text-xl max-w-md lg:text-2xl lg:max-w-3xl">Anyone can earn their first dollar online. Just start with what you know, see what sticks, and get paid. It's that easy.</div>
-        <div class="mt-2 flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-4 w-full max-w-[384px] sm:max-w-none sm:w-auto mx-auto">
+<div class="bg-gray min-h-screen overflow-x-clip">
+  <header class="grid grid-cols-1 bg-gray overflow-hidden">
+    <div data-hero-parallax-container class="relative flex items-center justify-center px-[clamp(1rem,4vw,4rem)] py-[clamp(6rem,14vw,14rem)]">
+      <div class="relative z-10 mx-auto flex w-full max-w-[56rem] flex-col items-center gap-[clamp(1.25rem,3vw,2rem)] text-center">
+        <h1 class="max-w-[12ch] text-balance text-[clamp(3.25rem,8vw,6.5rem)] font-medium leading-[0.92]">Go from<br class="sm:hidden"> <span class="whitespace-nowrap">0 to $1</span></h1>
+        <div class="mx-auto max-w-[46rem] text-balance text-[clamp(1.125rem,2vw,1.5rem)]">Anyone can earn their first dollar online. Just start with what you know, see what sticks, and get paid. It's that easy.</div>
+        <div class="mx-auto mt-2 flex w-full max-w-[24rem] flex-col items-stretch justify-center gap-3 sm:max-w-none sm:w-auto sm:flex-row sm:items-center sm:gap-4">
           <div class="w-full sm:w-auto [&>div]:block!">
             <%= render "home/shared/button", text: "Start selling", url: signup_path %>
           </div>
@@ -59,9 +59,9 @@
     </div>
   </header>
 
-  <div class="flex flex-col bg-gray max-w-6xl mx-auto px-4 gap-8 md:-mt-20">
-    <div class="flex flex-col lg:flex-row gap-8">
-      <div class="flex flex-col md:relative bg-white border border-dark-gray/50 rounded-3xl p-8 lg:basis-2/3 h-auto md:h-120">
+  <div class="mx-auto flex w-[min(calc(100%_-_2rem),72rem)] flex-col gap-[clamp(1rem,2vw,2rem)] bg-gray md:-mt-20">
+    <div class="grid grid-cols-1 gap-[clamp(1rem,2vw,2rem)] lg:grid-cols-3">
+      <div class="flex min-w-0 flex-col overflow-hidden border border-dark-gray/50 bg-white p-[clamp(1.5rem,3vw,2rem)] shadow-[0_1rem_3rem_rgba(0,0,0,0.06)] md:relative md:h-120 lg:col-span-2 rounded-3xl">
         <div class="order-1 md:order-0">
           <p class="text-4xl text-balance">
             Sell anything
@@ -70,11 +70,11 @@
             Video lessons. Monthly subscriptions. Whatever! Gumroad was created to help you experiment with all kinds of ideas and formats.
           </p>
         </div>
-        <div class="w-[484px] order-2 md:order-0 md:absolute md:-top-16 md:-right-2 mt-4 md:mt-0">
+        <div class="order-2 mt-4 w-full max-w-[30.25rem] self-center md:absolute md:-right-2 md:-top-16 md:order-0 md:mt-0">
           <%= image_tag "about/ukulele.png", alt: "Sell anything feature illustration", class: "w-full h-auto" %>
         </div>
       </div>
-      <div class="flex flex-col md:relative overflow-hidden bg-white border border-dark-gray/50 rounded-3xl p-8 lg:basis-1/3 h-auto md:h-120">
+      <div class="flex min-w-0 flex-col overflow-hidden border border-dark-gray/50 bg-white p-[clamp(1.5rem,3vw,2rem)] shadow-[0_1rem_3rem_rgba(0,0,0,0.06)] md:relative md:h-120 rounded-3xl">
         <div class="order-1 md:order-0">
           <p class="text-4xl mb-4 text-balance">Make your own road</p>
           <p class="text-lg mb-4">
@@ -86,8 +86,8 @@
         </div>
       </div>
     </div>
-    <div class="flex flex-col lg:flex-row gap-8">
-      <div class="overflow-hidden flex flex-col justify-between bg-white border border-dark-gray/50 rounded-3xl p-8 lg:basis-1/3 h-auto md:h-120">
+    <div class="grid grid-cols-1 gap-[clamp(1rem,2vw,2rem)] lg:grid-cols-3">
+      <div class="flex min-w-0 flex-col justify-between overflow-hidden border border-dark-gray/50 bg-white p-[clamp(1.5rem,3vw,2rem)] shadow-[0_1rem_3rem_rgba(0,0,0,0.06)] md:h-120 rounded-3xl">
         <p class="text-4xl mb-8 md:mb-0 text-balance">Sell to anyone</p>
         <div class="flex flex-col gap-4">
           <% [
@@ -104,7 +104,7 @@
           <% end %>
         </div>
       </div>
-      <div class="flex flex-col md:relative bg-white border border-dark-gray/50 rounded-3xl p-8 lg:basis-2/3 h-auto md:h-120">
+      <div class="flex min-w-0 flex-col overflow-hidden border border-dark-gray/50 bg-white p-[clamp(1.5rem,3vw,2rem)] shadow-[0_1rem_3rem_rgba(0,0,0,0.06)] md:relative md:h-120 lg:col-span-2 rounded-3xl">
         <div class="order-1 md:order-0">
           <p class="text-4xl text-balance">
             Sell anywhere
@@ -113,13 +113,13 @@
             Create and customize your storefront with our all-in-one platform or choose to use your personal site instead. Seamlessly connect your Gumroad account to thousands of apps in your current stack.
           </p>
         </div>
-        <div class="w-[389px] order-2 md:order-0 md:absolute md:top-8 md:-right-8 mt-8 md:mt-0">
+        <div class="order-2 mt-8 w-full max-w-[24.3125rem] self-center md:absolute md:-right-8 md:top-8 md:order-0 md:mt-0">
           <%= image_tag "about/sell-anywhere.png", alt: "Sell to anyone feature illustration", class: "w-full h-auto" %>
         </div>
       </div>
     </div>
-    <div class="flex flex-col sm:flex-row gap-9">
-      <div class="bg-white border border-dark-gray/50 rounded-3xl p-8 md:p-14 flex-1">
+    <div class="grid grid-cols-1 gap-[clamp(1rem,2vw,2rem)] sm:grid-cols-2">
+      <div class="min-w-0 border border-dark-gray/50 bg-white p-[clamp(1.5rem,4vw,3.5rem)] shadow-[0_1rem_3rem_rgba(0,0,0,0.06)] rounded-3xl">
         <div class="flex flex-col md:relative">
           <div class="order-2 md:order-0">
             <%= image_tag "about/side-project-1.svg", alt: "Side project 1", class: "w-full h-auto" %>
@@ -129,7 +129,7 @@
           </div>
         </div>
       </div>
-      <div class="bg-white border border-dark-gray/50 rounded-3xl p-8 flex-1">
+      <div class="min-w-0 border border-dark-gray/50 bg-white p-[clamp(1.5rem,4vw,3.5rem)] shadow-[0_1rem_3rem_rgba(0,0,0,0.06)] rounded-3xl">
         <div class="flex flex-col md:relative">
           <div class="order-2 md:order-0">
             <%= image_tag "about/side-project-2.svg", alt: "Side project 2", class: "w-full h-auto object-cover mx-auto" %>
@@ -148,7 +148,7 @@
         You know all those great ideas you have?
       </div>
     </div>
-    <div class="relative max-w-6xl mx-auto mb-12 h-80 bg-orange p-8 border-y border-black lg:border lg:rounded-full">
+    <div class="relative mx-auto mb-12 h-80 w-[min(calc(100%_-_2rem),72rem)] bg-orange p-[clamp(1rem,3vw,2rem)] border border-black rounded-[2rem] lg:rounded-full">
       <div id="lottie-animation" class="absolute w-56 h-56 z-20 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 lg:top-20 lg:w-80 lg:h-80">
         <lottie-player
           src="<%= image_path("about/gumhead.json") %>"
@@ -221,7 +221,7 @@
     </div>
   </div>
 
-  <div class="grid grid-cols-1 lg:grid-cols-2 bg-gray max-w-6xl mx-auto px-4 gap-x-8 gap-y-12">
+  <div class="mx-auto grid w-[min(calc(100%_-_2rem),72rem)] grid-cols-1 place-items-stretch gap-[clamp(1rem,3vw,3rem)] bg-gray lg:grid-cols-2">
     <% testimonials = [
       {
         quote: "I launched MaxPacks as an experimental side gig; but within 2 years those Procreate brushes were earning more than my 6-figure salary in CG. Leaving in favor of Gumroad enabled me to explore other aspects of my art, develop new hobbies, and finally prioritize my personal life.",
@@ -263,7 +263,7 @@
     <%= render "home/shared/discovery_category" %>
   </div>
 
-  <div class="bg-gray flex flex-col lg:flex-row rounded-2xl px-4 gap-8 mx-auto max-w-6xl">
+  <div class="mx-auto flex w-[min(calc(100%_-_2rem),72rem)] flex-col gap-[clamp(1rem,2vw,2rem)] rounded-2xl bg-gray lg:flex-row">
     <div class="flex flex-col overflow-hidden lg:flex-col lg:w-1/2 gap-8">
       <div class="flex bg-white items-center px-4 py-10 md:p-10 border lg:border border-dark-gray/50 rounded-2xl">
         <h3 class="font-medium text-4xl md:text-5xl">
