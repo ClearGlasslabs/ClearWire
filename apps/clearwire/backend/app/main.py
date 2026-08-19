@@ -12,12 +12,14 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from .exposure_audit import aggregate_exposure
+
 SECRET = os.getenv("PSEUDONYMIZATION_SECRET", "development-secret").encode()
 RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "30"))
 ALLOW_PRECISE_LOCATION = os.getenv("ALLOW_PRECISE_LOCATION", "false").lower() == "true"
 
 app = FastAPI(title="Clearwire API", version="1.0.0", docs_url="/docs")
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000"], allow_methods=["GET", "POST"], allow_headers=["*"])
 
 class Technology(str, Enum):
     wifi = "wifi"
@@ -73,14 +75,14 @@ class SensorSimulatorProvider:
             precise = scope.precise_location and ALLOW_PRECISE_LOCATION
             lat = privacy_round(43.6828 + idx * 0.0008, 5 if precise else 3)
             lon = privacy_round(-79.4140 - idx * 0.0007, 5 if precise else 3)
-            result.append(Observation(
-                observation_id=f"sim-{idx+1:03d}", technology=Technology(tech),
-                identifier=pseudonymize(raw_id), label=label, signal_dbm=signal,
-                channel=channel, risk_score=risk, observed_at=now, lat=lat, lon=lon,
-                scope_id=scope.scope_id))
+            result.append(Observation(observation_id=f"sim-{idx+1:03d}", technology=Technology(tech), identifier=pseudonymize(raw_id), label=label, signal_dbm=signal, channel=channel, risk_score=risk, observed_at=now, lat=lat, lon=lon, scope_id=scope.scope_id))
         return result
 
 provider: Provider = SensorSimulatorProvider()
+
+def require_scope(scope_id: str, header_scope: str | None) -> None:
+    if header_scope != scope_id:
+        raise HTTPException(status_code=403, detail="Authorization scope header does not match query scope")
 
 @app.get("/health")
 def health() -> dict:
@@ -98,9 +100,14 @@ def scan(request: ScanRequest, http_request: Request, x_authorization_scope: str
     if scope.expires_at <= datetime.now(timezone.utc):
         raise HTTPException(status_code=403, detail="Authorization scope has expired")
     observations = provider.observe(scope)
-    return {"authorized_monitoring": True, "scope_id": scope.scope_id, "started_at": datetime.now(timezone.utc).isoformat(), "observation_count": len(observations), "observations": observations, "audit_event": {"action": "scan", "scope_id": scope.scope_id, "client": http_request.client.host if http_request.client else "unknown", "timestamp": time.time()}}
+    return {"authorized_monitoring": True, "scope_id": scope.scope_id, "started_at": datetime.now(timezone.utc).isoformat(), "observation_count": len(observations), "observations": observations, "audit_event": {"action": "scan", "scope_id": scope.scope_id, "timestamp": time.time()}}
 
 @app.get("/api/v1/observations")
-def observations(scope_id: str) -> dict:
-    scope = AuthorizationScope(scope_id=scope_id, label="API query", expires_at=datetime.now(timezone.utc).replace(year=datetime.now(timezone.utc).year + 1))
-    return {"scope_id": scope_id, "authorized_monitoring": True, "observations": provider.observe(scope)}
+def observations(scope_id: str, x_authorization_scope: str | None = Header(default=None)) -> dict:
+    require_scope(scope_id, x_authorization_scope)
+    return {"scope_id": scope_id, "authorized_monitoring": True, "observations": provider.observe(AuthorizationScope(scope_id=scope_id, label="Authorized query", expires_at=datetime.now(timezone.utc).replace(year=datetime.now(timezone.utc).year + 1)))}
+
+@app.post("/api/v1/exposure-audit")
+def exposure_audit(scope_id: str, k: int = 5, x_authorization_scope: str | None = Header(default=None)) -> dict:
+    require_scope(scope_id, x_authorization_scope)
+    return aggregate_exposure(scope_id, k)
