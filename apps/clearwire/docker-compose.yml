@@ -1,0 +1,30 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: clearwire
+      POSTGRES_USER: clearwire
+      POSTGRES_PASSWORD: clearwire
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://clearwire:clearwire@postgres:5432/clearwire
+      REDIS_URL: redis://redis:6379/0
+      PSEUDONYMIZATION_SECRET: ${PSEUDONYMIZATION_SECRET:-local-only-secret}
+      RETENTION_DAYS: ${RETENTION_DAYS:-30}
+      ALLOW_PRECISE_LOCATION: ${ALLOW_PRECISE_LOCATION:-false}
+    depends_on: [postgres, redis]
+    ports: ["8000:8000"]
+  frontend:
+    build: ./frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on: [api]
+    ports: ["3000:3000"]
+volumes:
+  pgdata:
